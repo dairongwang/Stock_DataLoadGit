@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{% block title %}Stock Data Load{% endblock %} - dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <span class="brand">Stock Data Load</span>
+  <nav>
+    <a href="{{ url_for('index') }}" class="{{ 'active' if request.endpoint == 'index' }}">Overview</a>
+    <a href="{{ url_for('formats_page') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('format') }}">File formats</a>
+    <a href="{{ url_for('settings_page') }}" class="{{ 'active' if request.endpoint == 'settings_page' }}">Settings</a>
+  </nav>
+  <span class="muted mono" style="margin-left:auto;color:#9ca3af">{{ settings.config_file or 'built-in defaults' }}</span>
+</header>
+<main>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

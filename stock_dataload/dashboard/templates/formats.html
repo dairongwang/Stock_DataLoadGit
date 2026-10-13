@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}File formats{% endblock %}
+{% block content %}
+<div class="toolbar"><h1 style="margin:0">File formats</h1><a class="btn" href="{{ url_for('format_edit') }}" style="margin-left:auto">+ New format</a></div>
+<p class="muted">A format tells the converter how a source file is laid out. Files in the conversion folder whose name matches a format's
+<b>file pattern</b> use that format automatically; otherwise the header names are matched against the known aliases
+(symbol/ticker, volume/vol, trade date/date, ...). Stored in <code>{{ settings.formats_file }}</code>.</p>
+<div class="card">
+<table>
+  <tr><th>Name</th><th>Type</th><th>File pattern</th><th>Mapping</th><th>Options</th><th>Description</th><th></th></tr>
+  {% for f in formats_list %}
+  <tr>
+    <td><b>{{ f.name }}</b>{% if f.builtin %} <span class="badge">example</span>{% endif %}</td>
+    <td><span class="badge type">{{ f.file_type }}</span></td>
+    <td class="mono">{{ f.file_pattern or '-' }}</td>
+    <td class="mono" style="font-size:11px">
+      {% if f.mapping_mode == 'map' %}{% for c in default_columns %}{{ c }}&larr;{{ f.column_map[c] }} {% endfor %}
+      {% elif f.mapping_mode == 'sequence' %}{{ f.columns|join(',') }}
+      {% else %}auto (header names){% endif %}</td>
+    <td class="muted" style="font-size:12px">
+      {% if f.delimiter %}delim <code>{{ f.delimiter|replace('\t','TAB') }}</code>{% endif %}
+      {% if not f.has_header %}no header{% endif %}
+      {% if f.skip_rows %}skip {{ f.skip_rows }}{% endif %}
+      {% if f.date_format %}date {{ f.date_format }}{% endif %}
+      {% if f.sheet %}sheet {{ f.sheet }}{% endif %}
+      {% if f.record_path %}path {{ f.record_path }}{% endif %}
+      {% if f.record_tag %}tag &lt;{{ f.record_tag }}&gt;{% endif %}
+      {% if f.skip_bad_rows %}skip bad rows{% endif %}</td>
+    <td class="muted">{{ f.description }}</td>
+    <td style="white-space:nowrap">
+      <a class="btn small secondary" href="{{ url_for('format_edit', name=f.name) }}">Edit</a>
+      <a class="btn small secondary" href="{{ url_for('format_edit', clone=f.name) }}">Clone</a>
+      <form method="post" action="{{ url_for('format_delete', name=f.name) }}" class="inline" onsubmit="return confirm('Delete format {{ f.name }}?')"><button class="small danger">Delete</button></form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

@@ -1,0 +1,80 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>{631b8b41-4a29-44e2-99a3-8099da492eb3}</ProjectGuid>
+    <ProjectHome />
+    <StartupFile>stock_dataload\__init__.py</StartupFile>
+    <SearchPath />
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <ProjectTypeGuids>{888888a0-9f3d-457c-b088-3a5042f75d52}</ProjectTypeGuids>
+    <LaunchProvider>Standard Python launcher</LaunchProvider>
+    <InterpreterId>Global|PythonCore|3.14</InterpreterId>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'" />
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'" />
+  <PropertyGroup>
+    <VisualStudioVersion Condition=" '$(VisualStudioVersion)' == '' ">10.0</VisualStudioVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="config.ini" />
+    <Content Include="docs\dashboard_format_editor.png" />
+    <Content Include="docs\dashboard_overview.png" />
+    <Content Include="docs\dashboard_preview.png" />
+    <Content Include="docs\dashboard_settings.png" />
+    <Content Include="requirements.txt" />
+    <Content Include="samples\NASDAQ_20250123.txt" />
+    <Content Include="samples\NASDAQ_20250123_noheader.txt" />
+    <Content Include="samples\NASDAQ_20250123_reordered.txt" />
+    <Content Include="stock_dataload\dashboard\static\style.css" />
+    <Content Include="stock_dataload\dashboard\templates\base.html" />
+    <Content Include="stock_dataload\dashboard\templates\browse.html" />
+    <Content Include="stock_dataload\dashboard\templates\formats.html" />
+    <Content Include="stock_dataload\dashboard\templates\format_edit.html" />
+    <Content Include="stock_dataload\dashboard\templates\index.html" />
+    <Content Include="stock_dataload\dashboard\templates\preview.html" />
+    <Content Include="stock_dataload\dashboard\templates\settings.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="samples\make_samples.py" />
+    <Compile Include="stock_dataload\cli.py" />
+    <Compile Include="stock_dataload\config.py" />
+    <Compile Include="stock_dataload\converter.py" />
+    <Compile Include="stock_dataload\dashboard\app.py" />
+    <Compile Include="stock_dataload\dashboard\__init__.py" />
+    <Compile Include="stock_dataload\db.py" />
+    <Compile Include="stock_dataload\file_formats.py" />
+    <Compile Include="stock_dataload\formats.py" />
+    <Compile Include="stock_dataload\loader.py" />
+    <Compile Include="stock_dataload\logging_setup.py" />
+    <Compile Include="stock_dataload\readers.py" />
+    <Compile Include="stock_dataload\__init__.py" />
+    <Compile Include="stock_dataload\__main__.py" />
+    <Compile Include="tests\helpers.py" />
+    <Compile Include="tests\test_config_cli.py" />
+    <Compile Include="tests\test_converter.py" />
+    <Compile Include="tests\test_dashboard.py" />
+    <Compile Include="tests\test_dashboard_browser.py" />
+    <Compile Include="tests\test_file_formats.py" />
+    <Compile Include="tests\test_formats.py" />
+    <Compile Include="tests\test_loader.py" />
+    <Compile Include="tests\test_readers.py" />
+    <Compile Include="tests\test_requirements.py" />
+    <Compile Include="tests\__init__.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="docs" />
+    <Folder Include="samples" />
+    <Folder Include="stock_dataload" />
+    <Folder Include="stock_dataload\dashboard" />
+    <Folder Include="stock_dataload\dashboard\static" />
+    <Folder Include="stock_dataload\dashboard\templates" />
+    <Folder Include="tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <InterpreterReference Include="Global|PythonCore|3.14" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+</Project>

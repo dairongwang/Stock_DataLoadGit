@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+logs/*.log*
+data/*.db
+data/*.db-*
+data/conversion/*
+data/converted/*
+data/loading/*
+data/archive/*
+data/error/*
+data/work/*
+!data/**/.gitkeep

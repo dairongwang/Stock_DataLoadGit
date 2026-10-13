@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Preview {{ p.source }}{% endblock %}
+{% block content %}
+<h1>Preview: <span class="mono">{{ p.source }}</span></h1>
+<div class="card">
+  <form method="get" action="{{ url_for('preview') }}" class="toolbar">
+    <input type="hidden" name="file" value="{{ file }}"><input type="hidden" name="folder" value="{{ folder }}">
+    <label>Format
+      <select name="format">
+        <option value="">(auto-detect)</option>
+        {% for fm in formats_list %}<option value="{{ fm.name }}" {% if fm.name == chosen %}selected{% endif %}>{{ fm.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="small secondary">Re-run preview</button>
+    <a class="btn small secondary" href="{{ url_for('index') }}">Back to overview</a>
+  </form>
+  {% if folder == 'conversion_dir' and p.ok %}
+  <form method="post" action="{{ url_for('convert') }}" class="toolbar" style="margin-top:6px">
+    <input type="hidden" name="file" value="{{ file }}"><input type="hidden" name="format" value="{{ chosen }}">
+    <input type="hidden" name="move_source" value="on">
+    <select name="on_conflict"><option value="rename">rename if exists</option><option value="overwrite">overwrite if exists</option><option value="error">fail if exists</option></select>
+    <button type="submit" class="small">Convert now</button>
+  </form>
+  {% endif %}
+  <div class="kv" style="margin-top:10px">
+    <span class="muted">Format</span><span>{{ p.format }}</span>
+    <span class="muted">Detected type</span><span>{{ p.file_type or '-' }}{% if p.delimiter %} (delimiter <code>{{ p.delimiter|replace('\t','TAB') }}</code>){% endif %} {{ p.detail }}</span>
+    <span class="muted">Source columns</span><span class="mono">{{ p.source_header|join(', ') if p.source_header else '(no header)' }}</span>
+    <span class="muted">Mapping</span><span class="mono">{% for c in default_columns %}{{ c }} &larr; #{{ p.mapping.get(c, '?') }}{{ '  ' }}{% endfor %}</span>
+    <span class="muted">Data rows</span><span>{{ p.total_rows if p.total_rows is not none else '-' }}</span>
+    <span class="muted">Result</span><span>{% if p.ok %}<span class="badge ok">ready to convert</span>{% else %}<span class="badge err">cannot convert</span>{% endif %}</span>
+  </div>
+  {% for e in p.errors %}<div class="flash error" style="margin-top:10px">{{ e }}</div>{% endfor %}
+</div>
+<div class="grid2">
+  <div class="card"><h2>Source (first {{ p.source_rows|length }} rows)</h2>
+    <div class="preview-table"><table class="mono">
+      {% if p.source_header %}<tr>{% for h in p.source_header %}<th>{{ h }}</th>{% endfor %}</tr>{% endif %}
+      {% for r in p.source_rows %}<tr>{% for v in r %}<td>{{ v }}</td>{% endfor %}</tr>{% endfor %}
+    </table></div></div>
+  <div class="card"><h2>Converted (default format)</h2>
+    <div class="preview-table"><table class="mono">
+      <tr>{% for h in p.converted_header %}<th>{{ h }}</th>{% endfor %}</tr>
+      {% for r in p.converted_rows %}<tr>{% for v in r %}<td>{{ v }}</td>{% endfor %}</tr>{% endfor %}
+    </table></div></div>
+</div>
+{% endblock %}

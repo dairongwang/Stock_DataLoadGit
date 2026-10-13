@@ -1,0 +1,5 @@
+# Core (convert csv/text/json/xml + load into SQLite): Python 3.10+ standard library only.
+# Needed for the web dashboard:
+flask>=2.3
+# Needed to read Excel (.xlsx) source files:
+openpyxl>=3.1

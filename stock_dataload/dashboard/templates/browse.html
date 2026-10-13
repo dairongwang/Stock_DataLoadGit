@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ key }}{% endblock %}
+{% block content %}
+<h1>{{ key.replace('_dir', '') | capitalize }} folder</h1>
+<div class="card"><div class="folder">{{ folder }}</div>
+{% if files %}
+<table><tr><th>File</th><th class="num">Size</th><th>Modified</th><th></th></tr>
+{% for f in files %}<tr><td class="mono">{{ f.name }}</td><td class="num">{{ f.size|filesize }}</td><td class="muted">{{ f.modified.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+<td style="white-space:nowrap"><a class="btn small secondary" href="{{ url_for('download', key=key, name=f.name) }}">open</a>
+<a class="btn small secondary" href="{{ url_for('download', key=key, name=f.name, dl=1) }}">download</a>
+<form method="post" action="{{ url_for('delete_file', key=key, name=f.name) }}" class="inline" onsubmit="return confirm('Delete {{ f.name }}?')"><input type="hidden" name="next" value="{{ url_for('browse', key=key) }}"><button class="small danger">delete</button></form></td></tr>{% endfor %}
+</table>{% else %}<p class="muted">Empty.</p>{% endif %}
+<p><a href="{{ url_for('index') }}">&larr; back</a></p></div>
+{% endblock %}

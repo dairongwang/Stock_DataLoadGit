@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if old_name else 'New' }} format{% endblock %}
+{% block content %}
+<h1>{{ 'Edit format: ' + old_name if old_name else 'New file format' }}</h1>
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+<form method="post" id="fmtform">
+<div class="grid2">
+<div>
+<fieldset><legend>General</legend>
+  <div class="form-grid">
+    <label>Name</label><input type="text" name="name" value="{{ fmt.name }}" required>
+    <label>Description</label><input type="text" name="description" value="{{ fmt.description }}">
+    <label>File type</label>
+      <select name="file_type">{% for t in file_types %}<option value="{{ t }}" {% if fmt.file_type == t %}selected{% endif %}>{{ file_type_labels[t] }}</option>{% endfor %}</select>
+    <label>File name pattern</label><input type="text" name="file_pattern" value="{{ fmt.file_pattern }}" placeholder="e.g. NYSE_*.csv;*.json">
+    <span class="help">files in the conversion folder matching this pattern use this format automatically (several patterns separated by ;)</span>
+    <label>Encoding</label><input type="text" name="encoding" value="{{ fmt.encoding }}">
+    <label>Date format</label><input type="text" name="date_format" value="{{ fmt.date_format or '' }}" placeholder="blank = auto (YYYYMMDD, 2025-01-23, 01/23/2025 ...)">
+    <span class="help">strptime pattern of the source date, e.g. <code>%Y-%m-%d</code> or <code>%d/%m/%Y</code>; leave blank to auto-detect</span>
+    <label>Skip bad rows</label><span><input type="checkbox" name="skip_bad_rows" {% if fmt.skip_bad_rows %}checked{% endif %}> skip rows that cannot be converted instead of failing the file</span>
+  </div>
+</fieldset>
+<fieldset><legend>CSV / text options</legend>
+  <div class="form-grid">
+    <label>Delimiter</label><input type="text" name="delimiter" value="{{ fmt.delimiter|replace('\t','tab') if fmt.delimiter else '' }}" placeholder="blank = auto-detect; or , ; | tab">
+    <label>Header row</label><span><input type="checkbox" name="has_header" {% if fmt.has_header %}checked{% endif %}> first row contains column names</span>
+    <label>Skip rows</label><input type="number" name="skip_rows" value="{{ fmt.skip_rows }}" min="0" style="width:90px">
+    <span class="help">title/comment lines above the header (also used for Excel)</span>
+  </div>
+</fieldset>
+<fieldset><legend>Excel / JSON / XML options</legend>
+  <div class="form-grid">
+    <label>Excel sheet</label><input type="text" name="sheet" value="{{ fmt.sheet }}" placeholder="sheet name or number; blank = first sheet">
+    <label>JSON record path</label><input type="text" name="record_path" value="{{ fmt.record_path }}" placeholder="e.g. data.rows ; blank = auto">
+    <label>XML record tag</label><input type="text" name="record_tag" value="{{ fmt.record_tag }}" placeholder="e.g. quote ; blank = auto">
+  </div>
+</fieldset>
+</div>
+<div>
+<fieldset><legend>Column mapping</legend>
+  <p class="muted" style="margin-top:0">Target columns (always in this order): <code>{{ default_header }}</code></p>
+  <label><input type="radio" name="mapping_mode" value="auto" {% if fmt.mapping_mode == 'auto' %}checked{% endif %} onchange="modes()"> <b>Auto</b> - match header / field names (symbol, volume, trade date, ...)</label><br>
+  <label><input type="radio" name="mapping_mode" value="sequence" {% if fmt.mapping_mode == 'sequence' %}checked{% endif %} onchange="modes()"> <b>Column sequence</b> - source columns in file order</label>
+  <div id="mode-sequence" style="margin:6px 0 10px 24px">
+    <input type="text" name="columns" value="{{ fmt.columns|join(',') if fmt.columns else '' }}" placeholder="e.g. date,ticker,vol,close,open,high,low,skip">
+    <div class="help muted" style="font-size:12px">use ticker/date/open/high/low/close/vol (or aliases) and <code>skip</code> for columns to ignore - required for files without header</div>
+  </div>
+  <label><input type="radio" name="mapping_mode" value="map" {% if fmt.mapping_mode == 'map' %}checked{% endif %} onchange="modes()"> <b>Map each column</b> - pick the source field for every target column</label>
+  <div id="mode-map" class="map-grid" style="margin:6px 0 0 24px">
+    {% for c in default_columns %}
+      <label class="mono">&lt;{{ c }}&gt;</label><input type="text" name="map_{{ c }}" value="{{ fmt.column_map.get(c, '') }}" placeholder="source field name, #3 for the 3rd column, or =YHOO for a constant">
+    {% endfor %}
+  </div>
+</fieldset>
+<fieldset><legend>Test this format</legend>
+  <div class="toolbar">
+    <select name="test_file">
+      <option value="">-- file in the conversion folder --</option>
+      {% for n in conversion_files %}<option value="{{ n }}" {% if request.form.get('test_file') == n %}selected{% endif %}>{{ n }}</option>{% endfor %}
+    </select>
+    <button type="submit" name="action" value="test" class="secondary">Run preview</button>
+  </div>
+  {% if preview %}
+    <div class="kv" style="margin-top:10px">
+      <span class="muted">Detected</span><span>{{ preview.file_type }}{% if preview.delimiter %} (delimiter <code>{{ preview.delimiter|replace('\t','TAB') }}</code>){% endif %} {{ preview.detail }}</span>
+      <span class="muted">Source columns</span><span class="mono">{{ preview.source_header|join(', ') if preview.source_header else '(no header)' }}</span>
+      <span class="muted">Mapping</span><span class="mono">{% for c in default_columns %}{{ c }}&larr;#{{ preview.mapping.get(c, '?') }} {% endfor %}</span>
+      <span class="muted">Rows</span><span>{{ preview.total_rows }}</span>
+      <span class="muted">Result</span><span>{% if preview.ok %}<span class="badge ok">OK</span>{% else %}<span class="badge err">problems</span>{% endif %}</span>
+    </div>
+    {% for e in preview.errors %}<div class="flash error" style="margin-top:8px">{{ e }}</div>{% endfor %}
+    <div class="preview-table" style="margin-top:8px"><table class="mono">
+      <tr>{% for h in preview.converted_header %}<th>{{ h }}</th>{% endfor %}</tr>
+      {% for r in preview.converted_rows %}<tr>{% for v in r %}<td>{{ v }}</td>{% endfor %}</tr>{% endfor %}
+    </table></div>
+  {% endif %}
+</fieldset>
+</div>
+</div>
+<div class="actions">
+  <button type="submit" name="action" value="save">Save format</button>
+  <a class="btn secondary" href="{{ url_for('formats_page') }}">Cancel</a>
+</div>
+</form>
+<script>
+function modes(){
+  var m = document.querySelector('input[name=mapping_mode]:checked').value;
+  document.getElementById('mode-sequence').style.opacity = m === 'sequence' ? 1 : .45;
+  document.getElementById('mode-map').style.opacity = m === 'map' ? 1 : .45;
+}
+modes();
+</script>
+{% endblock %}

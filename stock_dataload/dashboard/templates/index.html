@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+<p class="muted">Default loading format: <code>{{ default_header }}</code> (comma separated text file, date as YYYYMMDD).
+Files in other layouts or types ({{ supported }}) go to the <b>conversion folder</b> first.</p>
+
+<div class="pipeline">
+  <div class="card" style="margin:0">
+    <h2>1. Conversion folder <span class="badge">{{ conversion_files|length }} file(s)</span></h2>
+    <div class="folder">{{ settings.conversion_dir }}</div>
+    <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" class="toolbar" style="margin-top:10px">
+      <input type="hidden" name="target" value="conversion_dir">
+      <input type="file" name="files" multiple>
+      <button class="small secondary" type="submit">Upload</button>
+    </form>
+  </div>
+  <div class="arrow">&#8594;<br><span style="font-size:11px">convert</span></div>
+  <div class="card" style="margin:0">
+    <h2>2. Loading folder <span class="badge">{{ loading_files|length }} file(s)</span></h2>
+    <div class="folder">{{ settings.loading_dir }}</div>
+    <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" class="toolbar" style="margin-top:10px">
+      <input type="hidden" name="target" value="loading_dir">
+      <input type="file" name="files" multiple accept=".txt">
+      <button class="small secondary" type="submit">Upload .txt</button>
+    </form>
+  </div>
+  <div class="arrow">&#8594;<br><span style="font-size:11px">load</span></div>
+  <div class="card" style="margin:0">
+    <h2>3. Staging table <code>{{ settings.stage_table }}</code></h2>
+    <div class="folder">{{ settings.sqlite_path }}</div>
+    <div class="stat" style="margin-top:8px">{{ '{:,}'.format(total_rows) }} <span class="muted" style="font-size:13px;font-weight:400">rows</span></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="toolbar">
+    <h2 style="margin:0">Files waiting for conversion</h2>
+    <form method="post" action="{{ url_for('convert_all') }}" class="inline" style="margin-left:auto">
+      <select name="on_conflict" title="if a file with the same name is already in the loading folder">
+            <option value="rename">rename if exists</option><option value="overwrite">overwrite if exists</option><option value="error">fail if exists</option></select>
+      <label title="move sources to the converted folder afterwards"><input type="checkbox" name="move_source" checked> move sources</label>
+      <button type="submit" class="small" {% if not conversion_files %}disabled{% endif %}>Convert all</button>
+    </form>
+  </div>
+  {% if conversion_files %}
+  <table>
+    <tr><th>File</th><th>Type</th><th class="num">Size</th><th>Modified</th><th>Format to use</th><th></th></tr>
+    {% for f in conversion_files %}
+    <tr>
+      <td class="mono">{{ f.name }}{% if f.ok == False %}<div class="note err">{{ f.note }}</div>{% endif %}</td>
+      <td><span class="badge type">{{ f.kind }}</span></td>
+      <td class="num">{{ f.size|filesize }}</td>
+      <td class="muted">{{ f.modified.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>
+        <form method="post" action="{{ url_for('convert') }}" class="inline" id="cf-{{ loop.index }}">
+          <input type="hidden" name="file" value="{{ f.name }}">
+          <select name="format">
+            <option value="" {% if not f.suggested_format %}selected{% endif %}>(auto-detect)</option>
+            {% for fm in formats_list %}<option value="{{ fm.name }}" {% if fm.name == f.suggested_format %}selected{% endif %}>{{ fm.name }}</option>{% endfor %}
+          </select>
+          <select name="on_conflict" title="if a file with the same name is already in the loading folder">
+            <option value="rename">rename if exists</option><option value="overwrite">overwrite if exists</option><option value="error">fail if exists</option></select>
+          <label title="move the source to the converted folder afterwards"><input type="checkbox" name="move_source" checked> move source</label>
+        </form>
+      </td>
+      <td style="white-space:nowrap">
+        <button type="submit" form="cf-{{ loop.index }}" class="small">Convert</button>
+        <button type="submit" form="cf-{{ loop.index }}" formaction="{{ url_for('preview') }}" formmethod="get" class="small secondary">Preview</button>
+        <form method="post" action="{{ url_for('delete_file', key='conversion_dir', name=f.name) }}" class="inline" onsubmit="return confirm('Delete {{ f.name }}?')"><button class="small danger">Delete</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No files. Upload a file above or copy it into the conversion folder.</p>{% endif %}
+</div>
+
+<div class="card">
+  <div class="toolbar">
+    <h2 style="margin:0">Files waiting to be loaded</h2>
+    <form method="post" action="{{ url_for('load') }}" class="inline" style="margin-left:auto">
+      <input type="text" name="market" placeholder="market (optional)" style="width:150px">
+      <label title="empty the staging table before loading"><input type="checkbox" name="truncate"> truncate first</label>
+      <button type="submit" class="small" {% if not loading_files %}disabled{% endif %}>Load all</button>
+    </form>
+  </div>
+  {% if loading_files %}
+  <table>
+    <tr><th>File</th><th>Check</th><th class="num">Size</th><th>Modified</th><th></th></tr>
+    {% for f in loading_files %}
+    <tr>
+      <td class="mono">{{ f.name }}</td>
+      <td>{% if f.ok %}<span class="badge ok">default format</span>{% else %}<span class="badge err">not loadable</span><div class="note err">{{ f.note }}</div>{% endif %}</td>
+      <td class="num">{{ f.size|filesize }}</td>
+      <td class="muted">{{ f.modified.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td style="white-space:nowrap">
+        <form method="post" action="{{ url_for('load') }}" class="inline"><input type="hidden" name="file" value="{{ f.name }}"><button class="small" {% if not f.ok %}disabled{% endif %}>Load</button></form>
+        <a class="btn small secondary" href="{{ url_for('preview', file=f.name, folder='loading_dir') }}">View</a>
+        <form method="post" action="{{ url_for('delete_file', key='loading_dir', name=f.name) }}" class="inline" onsubmit="return confirm('Delete {{ f.name }}?')"><button class="small danger">Delete</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No files. Convert a file or upload a default-format .txt file.</p>{% endif %}
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Recent loads</h2>
+    {% if loads %}
+    <table>
+      <tr><th>Source file</th><th class="num">Rows</th><th>Loaded at</th><th>Load id</th></tr>
+      {% for src, lid, n, at in loads %}
+      <tr><td class="mono">{{ src }}</td><td class="num">{{ '{:,}'.format(n) }}</td><td class="muted">{{ at }}</td><td class="mono muted">{{ lid[:8] }}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">Nothing loaded yet.</p>{% endif %}
+    <p class="muted" style="margin-bottom:0">Archive: {{ archive_count }} loaded file(s) &middot; Converted sources: {{ converted_count }}
+      &middot; <a href="{{ url_for('browse', key='archive_dir') }}">browse archive</a> &middot; <a href="{{ url_for('browse', key='converted_dir') }}">browse converted</a></p>
+  </div>
+  <div class="card">
+    <h2>Errors <span class="badge {{ 'err' if error_files else '' }}">{{ error_files|length }}</span></h2>
+    {% if error_files %}
+    <table>
+      <tr><th>File</th><th>When</th><th></th></tr>
+      {% for f in error_files %}
+      <tr><td class="mono">{{ f.name }}</td><td class="muted">{{ f.modified.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td style="white-space:nowrap"><a class="btn small secondary" href="{{ url_for('download', key='error_dir', name=f.name) }}">open</a>
+        <form method="post" action="{{ url_for('delete_file', key='error_dir', name=f.name) }}" class="inline"><button class="small danger">delete</button></form></td></tr>
+      {% endfor %}
+    </table>
+    <p class="muted"><a href="{{ url_for('browse', key='error_dir') }}">browse error folder</a></p>
+    {% else %}<p class="muted">No errors.</p>{% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+<p class="muted">Relative paths are resolved against <code>{{ s.base_dir }}</code>. Folders are created if they do not exist. Saved to <code>{{ s.config_file or (s.base_dir ~ '/config.ini') }}</code>.</p>
+<form method="post">
+<div class="grid2">
+<div>
+<fieldset><legend>Folders</legend>
+  <div class="form-grid">
+    <label>Conversion folder</label><input type="text" name="conversion_dir" value="{{ s.conversion_dir }}">
+    <span class="help">drop csv / text / xlsx / json / xml source files here to be converted</span>
+    <label>Converted sources</label><input type="text" name="converted_dir" value="{{ s.converted_dir }}">
+    <span class="help">source files are moved here after a successful conversion</span>
+    <label>Loading folder</label><input type="text" name="loading_dir" value="{{ s.loading_dir }}">
+    <span class="help">default-format text files waiting to be loaded (converter output goes here)</span>
+    <label>Archive folder</label><input type="text" name="archive_dir" value="{{ s.archive_dir }}">
+    <label>Error folder</label><input type="text" name="error_dir" value="{{ s.error_dir }}">
+    <label>Work folder</label><input type="text" name="work_dir" value="{{ s.work_dir }}">
+    <label>Log folder</label><input type="text" name="log_dir" value="{{ s.log_dir }}">
+    <label>Formats file</label><input type="text" name="formats_file" value="{{ s.formats_file }}">
+  </div>
+</fieldset>
+</div>
+<div>
+<fieldset><legend>Database</legend>
+  <div class="form-grid">
+    <label>SQLite database file</label><input type="text" name="sqlite_path" value="{{ s.sqlite_path }}">
+    <label>Staging table</label><input type="text" name="stage_table" value="{{ s.stage_table }}">
+    <label>Batch size</label><input type="number" name="batch_size" value="{{ s.batch_size }}" min="1" style="width:110px">
+    <label>Truncate before load</label><span><input type="checkbox" name="truncate_before_load" {% if s.truncate_before_load %}checked{% endif %}> empty the staging table at the start of every load run</span>
+    <label>Replace re-loaded files</label><span><input type="checkbox" name="replace_existing_file_rows" {% if s.replace_existing_file_rows %}checked{% endif %}> loading a file name again replaces its previous rows</span>
+  </div>
+</fieldset>
+<fieldset><legend>Loader</legend>
+  <div class="form-grid">
+    <label>File patterns</label><input type="text" name="file_patterns" value="{{ s.file_patterns|join(';') }}">
+    <span class="help">which files in the loading folder are loaded (default <code>*.txt</code>)</span>
+    <label>Market from file name</label><input type="text" name="market_from_filename_regex" value="{{ s.market_from_filename_regex }}">
+    <span class="help">regular expression with a <code>market</code> group: NASDAQ_20250123.txt &rarr; NASDAQ</span>
+    <label>Default market</label><input type="text" name="default_market" value="{{ s.default_market }}">
+    <label>Skip bad rows</label><span><input type="checkbox" name="skip_bad_rows" {% if s.skip_bad_rows %}checked{% endif %}> skip invalid rows instead of failing the file</span>
+    <label>File encoding</label><input type="text" name="encoding" value="{{ s.encoding }}">
+  </div>
+</fieldset>
+</div>
+</div>
+<div class="actions"><button type="submit">Save settings</button><a class="btn secondary" href="{{ url_for('index') }}">Cancel</a></div>
+</form>
+{% endblock %}
