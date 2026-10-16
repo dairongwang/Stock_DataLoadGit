@@ -10,6 +10,7 @@ Command line interface.
     python -m stock_dataload formats              # list the custom file formats
     python -m stock_dataload init-db              # create the staging table
     python -m stock_dataload status               # what is in the staging table
+    python -m stock_dataload user add NAME ...    # user accounts for the dashboard (add/list/passwd/role/...)
 """
 
 from __future__ import annotations
@@ -20,11 +21,15 @@ from pathlib import Path
 
 from . import __version__, formats
 from .config import ConfigError, load_settings
+from .audit import AuditLogger
+from .auth import ROLES, AuthError, UserStore
 from .converter import ConversionError, FileConverter
+from .correction import CorrectionService
 from .db import DatabaseError, StageDatabase
 from .file_formats import FILE_TYPES, FileFormat, FormatError, FormatStore
 from .loader import StageLoader
 from .logging_setup import setup_logging
+from .quality import DataErrorRepository
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,8 +81,46 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("source", type=Path)
     _add_format_options(p)
 
-    sub.add_parser("init-db", help="create the staging table if it does not exist")
+    sub.add_parser("init-db", help="create the staging/log/error/history tables if they do not exist")
     sub.add_parser("status", help="show files loaded into the staging table")
+
+    # audit / quality ----------------------------------------------------
+    p = sub.add_parser("logs", help="show the app activity log (App_Log table)")
+    p.add_argument("--limit", type=int, default=50, help="number of entries (default 50)")
+    p.add_argument("--component", help="filter by component (loader, converter, cli, ...)")
+    p.add_argument("--level", help="filter by level (INFO, WARNING, ERROR, ALERT)")
+    p = sub.add_parser("errors", help="show operational errors (App_Error table)")
+    p.add_argument("--limit", type=int, default=50, help="number of entries (default 50)")
+    p.add_argument("--component", help="filter by component")
+    p = sub.add_parser("data-errors", help="show data quality findings (Data_Error table)")
+    p.add_argument("--limit", type=int, default=50, help="number of entries (default 50)")
+    p.add_argument("--file", dest="source_file", help="filter by source file name")
+    p.add_argument("--alerts", action="store_true", help="alert-level findings only")
+    p = sub.add_parser("history", help="show the file load registry (Load_History table)")
+    p.add_argument("--limit", type=int, default=50, help="number of entries (default 50)")
+    p.add_argument("--file", dest="file_name", help="filter by file name")
+
+    # users ----------------------------------------------------------------
+    p = sub.add_parser("user", help="manage dashboard user accounts (App_User table)")
+    usub = p.add_subparsers(dest="user_command", required=True)
+    u = usub.add_parser("add", help="add a user (use this to create the initial administrator)")
+    u.add_argument("username")
+    u.add_argument("--role", choices=ROLES, default="viewer")
+    u.add_argument("--name", default="", help="display name")
+    u.add_argument("--password", help="password (default: prompt, or $STOCK_DATALOAD_PASSWORD)")
+    u.add_argument("--must-change", action="store_true", help="the user must change the password at the first sign-in")
+    usub.add_parser("list", help="list the user accounts")
+    u = usub.add_parser("passwd", help="set a new password for a user")
+    u.add_argument("username")
+    u.add_argument("--password", help="password (default: prompt, or $STOCK_DATALOAD_PASSWORD)")
+    u.add_argument("--must-change", action="store_true")
+    u = usub.add_parser("role", help="change the role of a user")
+    u.add_argument("username")
+    u.add_argument("role", choices=ROLES)
+    for name, help_text in (("enable", "re-activate a user"), ("disable", "deactivate a user (cannot sign in)"),
+                            ("delete", "delete a user")):
+        u = usub.add_parser(name, help=help_text)
+        u.add_argument("username")
     return parser
 
 
@@ -168,7 +211,7 @@ def cmd_load(args, settings) -> int:
         return 0
     for r in results:
         print(r)
-    failed = [r for r in results if not r.ok]
+    failed = [r for r in results if r.failed]
     return 1 if failed else 0
 
 
@@ -185,6 +228,7 @@ def cmd_convert(args, settings) -> int:
                                     move_source=args.move_source)
             print(res)
         except ConversionError as exc:
+            AuditLogger(settings).error("converter", "convert", exc, file_name=Path(src).name)
             print(f"ERROR {src}: {exc}", file=sys.stderr)
             rc = 1
     return rc
@@ -198,10 +242,12 @@ def cmd_convert_folder(args, settings) -> int:
         print(f"Nothing to convert in {settings.conversion_dir}")
         return 0
     rc = 0
+    audit = AuditLogger(settings)
     for src, res, err in outcomes:
         if res is not None:
             print(res)
         else:
+            audit.error("converter", "convert_folder", err, file_name=src.name)
             print(f"ERROR {src.name}: {err}", file=sys.stderr)
             rc = 1
     return rc
@@ -255,7 +301,64 @@ def cmd_init_db(args, settings) -> int:
     settings.ensure_folders()
     db = StageDatabase(settings)
     db.ensure_stage_table()
+    db.ensure_history_table()
+    AuditLogger(settings).ensure_tables()
+    DataErrorRepository(settings).ensure_table()
+    CorrectionService(settings, db).ensure_table()
+    UserStore(settings).ensure_table()
     print(f"staging table {settings.stage_table} is ready (sqlite: {settings.sqlite_path})")
+    print("support tables ready: Load_History, App_Log, App_Error, Data_Error, Data_Correction, App_User")
+    return 0
+
+
+def cmd_logs(args, settings) -> int:
+    records = AuditLogger(settings).fetch_logs(limit=args.limit, component=args.component,
+                                               level=args.level)
+    if not records:
+        print("no log entries")
+        return 0
+    for r in reversed(records):
+        extra = f"  file={r.source_file}" if r.source_file else ""
+        print(f"{r.logged_at}  {r.level:<7} {r.component:<10} {r.event:<18} {r.message or ''}{extra}")
+    return 0
+
+
+def cmd_errors(args, settings) -> int:
+    records = AuditLogger(settings).fetch_errors(limit=args.limit, component=args.component)
+    if not records:
+        print("no errors recorded")
+        return 0
+    for r in reversed(records):
+        extra = f"  file={r.source_file}" if r.source_file else ""
+        kind = f" [{r.error_type}]" if r.error_type else ""
+        print(f"{r.occurred_at}  {r.component}/{r.operation}{kind}: {r.error_message}{extra}")
+    return 0
+
+
+def cmd_data_errors(args, settings) -> int:
+    repo = DataErrorRepository(settings)
+    records = repo.fetch(limit=args.limit, source_file=args.source_file, alerts_only=args.alerts)
+    if not records:
+        print("no data errors recorded")
+        return 0
+    for r in reversed(records):
+        flag = "ALERT " if r.alert else "error "
+        who = f"{r.ticker or '-'} {r.trade_date or ''}".strip()
+        line = f" line {r.line_no}" if r.line_no else ""
+        print(f"{r.detected_at}  {flag} {r.rule:<20} {who:<16} {r.error_message}"
+              f"  (file={r.source_file or '-'}{line})")
+    print(f"total: {repo.count(source_file=args.source_file, alerts_only=args.alerts)}")
+    return 0
+
+
+def cmd_history(args, settings) -> int:
+    records = StageDatabase(settings).load_history(limit=args.limit, file_name=args.file_name)
+    if not records:
+        print("no load history")
+        return 0
+    print(f"{'LoadedAt':<20} {'Status':<18} {'Rows':>8}  {'FileName':<36} FileHash")
+    for r in reversed(records):
+        print(f"{r.loaded_at:<20} {r.status:<18} {r.rows_loaded:>8}  {r.file_name:<36} {r.file_hash[:12]}")
     return 0
 
 
@@ -282,8 +385,77 @@ def cmd_status(args, settings) -> int:
     return 0
 
 
+def _password_from(args) -> str:
+    """--password, $STOCK_DATALOAD_PASSWORD, or an interactive prompt (never echoed)."""
+    import getpass
+    import os
+    password = getattr(args, "password", None) or os.environ.get("STOCK_DATALOAD_PASSWORD")
+    if password:
+        return password
+    if not sys.stdin.isatty():
+        raise AuthError("no password given: use --password, $STOCK_DATALOAD_PASSWORD or run interactively")
+    first = getpass.getpass("Password: ")
+    if first != getpass.getpass("Repeat password: "):
+        raise AuthError("the passwords do not match")
+    return first
+
+
+def cmd_user(args, settings) -> int:
+    store = UserStore(settings)
+    audit = AuditLogger(settings)
+    try:
+        if args.user_command == "add":
+            user = store.create_user(args.username, _password_from(args), role=args.role, display_name=args.name,
+                                     created_by="cli", must_change_password=args.must_change)
+            audit.log("auth", "user_created", f"cli created user '{user.username}' ({user.role})",
+                      details={"username": user.username, "role": user.role})
+            print(f"user '{user.username}' created with role {user.role}")
+            return 0
+        if args.user_command == "list":
+            users = store.list_users()
+            if not users:
+                print("no users - create the initial administrator with: user add admin --role admin")
+                return 0
+            print(f"{'Username':<20} {'Role':<9} {'Status':<9} {'Name':<24} Last sign-in")
+            for u in users:
+                status = "active" if u.is_active else "disabled"
+                if u.must_change_password:
+                    status += "*"
+                print(f"{u.username:<20} {u.role:<9} {status:<9} {(u.display_name or ''):<24} {u.last_login_at or '-'}")
+            print("(* = must change the password at the next sign-in)")
+            return 0
+        user = store.get_by_username(args.username)
+        if user is None:
+            raise AuthError(f"user '{args.username}' does not exist")
+        if args.user_command == "passwd":
+            store.set_password(user.user_id, _password_from(args), must_change=args.must_change)
+            audit.log("auth", "password_reset", f"cli reset the password of '{user.username}'", level="WARNING",
+                      details={"username": user.username})
+            print(f"password of '{user.username}' updated")
+        elif args.user_command == "role":
+            store.update(user.user_id, role=args.role)
+            print(f"'{user.username}' is now {args.role}")
+        elif args.user_command in ("enable", "disable"):
+            store.update(user.user_id, active=args.user_command == "enable")
+            print(f"'{user.username}' {args.user_command}d")
+        else:  # delete
+            store.delete_user(user.user_id)
+            print(f"'{user.username}' deleted")
+        audit.log("auth", f"user_{args.user_command}", f"cli: {args.user_command} '{user.username}'",
+                  details={"username": user.username})
+        return 0
+    except AuthError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
 COMMANDS = {
     "load": cmd_load,
+    "user": cmd_user,
+    "logs": cmd_logs,
+    "errors": cmd_errors,
+    "data-errors": cmd_data_errors,
+    "history": cmd_history,
     "convert": cmd_convert,
     "convert-folder": cmd_convert_folder,
     "inspect": cmd_inspect,
@@ -303,14 +475,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
     setup_logging(settings.log_dir, verbose=args.verbose, quiet=args.quiet)
+    audit = AuditLogger(settings)
     try:
         return COMMANDS[args.command](args, settings)
     except (ConversionError, DatabaseError, ConfigError, FormatError) as exc:
+        if not getattr(exc, "_audit_recorded", False):
+            audit.error("cli", args.command, exc)
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return 130
+    except Exception as exc:  # noqa: BLE001 - capture unexpected errors of any step
+        if not getattr(exc, "_audit_recorded", False):
+            audit.error("cli", args.command, exc)
+        print(f"UNEXPECTED ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

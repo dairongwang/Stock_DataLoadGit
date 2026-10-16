@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Load history{% endblock %}
+{% block content %}
+<h1>Load history <span class="muted" style="font-size:13px;font-weight:400">Load_History - every load attempt</span></h1>
+{% include "_monitor_nav.html" %}
+<div class="card">
+  <form method="get" class="toolbar">
+    <label>File <input type="text" name="file" value="{{ args.get('file', '') }}" placeholder="NASDAQ_20250123.txt" style="width:220px"></label>
+    <label>Show <input type="number" name="limit" value="{{ limit }}" min="1" max="5000" style="width:80px"></label>
+    <button type="submit" class="small">Filter</button>
+    <a class="btn small secondary" href="{{ url_for('monitor_history') }}">Reset</a>
+    <a class="btn small secondary" href="{{ url_for('api_history', **args) }}" style="margin-left:auto">JSON</a>
+  </form>
+  <p class="muted">Status <code>loaded</code>: rows are in the staging table &middot; <code>replaced</code>: a later load of the same file deleted and re-loaded them (one copy per file) &middot; <code>failed</code>: rolled back, see <a href="{{ url_for('monitor_errors') }}">errors</a>.</p>
+  {% if records %}
+  <table>
+    <tr><th>When</th><th>File</th><th>Market</th><th>Status</th><th class="num">Rows</th><th class="num">Size</th><th>Content hash</th><th>Load id</th><th class="wrap">Message</th></tr>
+    {% for h in records %}
+    <tr>
+      <td class="muted">{{ h.loaded_at }}</td>
+      <td class="mono">{{ h.file_name }}</td>
+      <td>{{ h.market or '' }}</td>
+      <td><span class="badge {{ 'ok' if h.status == 'loaded' else 'err' if h.status == 'failed' else '' }}">{{ h.status }}</span></td>
+      <td class="num">{{ '{:,}'.format(h.rows_loaded) }}</td>
+      <td class="num">{{ h.file_size|filesize if h.file_size is not none else '' }}</td>
+      <td class="mono muted" title="{{ h.file_hash }}">{{ h.file_hash[:12] }}</td>
+      <td class="mono muted">{{ h.load_id[:8] }}</td>
+      <td class="wrap">{{ h.message or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No load attempts match.</p>{% endif %}
+</div>
+{% endblock %}

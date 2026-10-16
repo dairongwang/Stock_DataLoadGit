@@ -46,7 +46,8 @@ class Settings:
     stage_table: str = "Stock_Stage"
     batch_size: int = 5000
     truncate_before_load: bool = False
-    replace_existing_file_rows: bool = True
+    # NOTE: re-loading a file always deletes its previous rows first (one copy
+    # per file, guaranteed) - this is not configurable.
 
     # --- loader --------------------------------------------------------------
     file_patterns: tuple[str, ...] = ("*.txt",)
@@ -54,6 +55,11 @@ class Settings:
     default_market: str = ""
     skip_bad_rows: bool = False
     encoding: str = "utf-8-sig"
+
+    # --- data quality ---------------------------------------------------------
+    quality_checks_enabled: bool = True            # run the strategy-based checks after every load
+    alert_missing_days: bool = True                # missing_market_day strategy on/off
+    extra_market_holidays: tuple[str, ...] = ()    # ad-hoc market closures (YYYY-MM-DD)
 
     # --- converter / custom formats -----------------------------------------
     formats_file: Path = PROJECT_ROOT / "formats.json"
@@ -63,6 +69,9 @@ class Settings:
     # --- dashboard -------------------------------------------------------------
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8050
+    # session-signing secret: generated once into this git-ignored file
+    # (or taken from $STOCK_DATALOAD_SECRET) - never stored in the repository
+    secret_key_file: Path = PROJECT_ROOT / "data" / ".secret_key"
 
     # where the settings came from (None = built-in defaults)
     config_file: Path | None = None
@@ -144,13 +153,21 @@ def load_settings(config_path: str | os.PathLike | None = None) -> Settings:
 
     settings.sqlite_path = base / "data" / "stock_trade.db"
     settings.formats_file = base / "formats.json"
+    settings.secret_key_file = base / "data" / ".secret_key"
     if parser.has_section("database"):
         s = parser["database"]
         settings.sqlite_path = resolve(s.get("sqlite_path", "data/stock_trade.db"))
         settings.stage_table = s.get("stage_table", "Stock_Stage").strip()
         settings.batch_size = _get_int(s, "batch_size", 5000)
         settings.truncate_before_load = _get_bool(s, "truncate_before_load", False)
-        settings.replace_existing_file_rows = _get_bool(s, "replace_existing_file_rows", True)
+
+    if parser.has_section("quality"):
+        s = parser["quality"]
+        settings.quality_checks_enabled = _get_bool(s, "enabled", True)
+        settings.alert_missing_days = _get_bool(s, "alert_missing_days", True)
+        holidays = s.get("extra_holidays", "")
+        settings.extra_market_holidays = tuple(
+            h.strip() for h in holidays.replace(";", ",").split(",") if h.strip())
 
     if parser.has_section("loader"):
         s = parser["loader"]
@@ -172,6 +189,7 @@ def load_settings(config_path: str | os.PathLike | None = None) -> Settings:
         s = parser["dashboard"]
         settings.dashboard_host = s.get("host", settings.dashboard_host).strip() or settings.dashboard_host
         settings.dashboard_port = _get_int(s, "port", settings.dashboard_port)
+        settings.secret_key_file = resolve(s.get("secret_key_file", "data/.secret_key"))
 
     if settings.batch_size <= 0:
         raise ConfigError("[database] batch_size must be > 0")
@@ -212,7 +230,15 @@ sqlite_path = {sqlite_path}
 stage_table = {stage_table}
 batch_size = {batch_size}
 truncate_before_load = {truncate_before_load}
-replace_existing_file_rows = {replace_existing_file_rows}
+; re-loading a file always deletes its previous rows first (one copy per file) - not configurable
+
+[quality]
+; run the strategy-based data quality checks after every load (findings -> Data_Error table)
+enabled = {quality_enabled}
+; alert when a known stock has no valid data for a market-open day
+alert_missing_days = {alert_missing_days}
+; ad-hoc market closures, comma separated YYYY-MM-DD (weekends + US holidays are built in)
+extra_holidays = {extra_holidays}
 
 [loader]
 file_patterns = {file_patterns}
@@ -228,6 +254,8 @@ file = {formats_file}
 [dashboard]
 host = {dashboard_host}
 port = {dashboard_port}
+; session secret (generated on first start; or set $STOCK_DATALOAD_SECRET). Keep out of version control.
+secret_key_file = {secret_key_file}
 """
 
 
@@ -250,12 +278,15 @@ def save_settings(settings: Settings, path: str | os.PathLike | None = None) -> 
         log_dir=_rel(settings.log_dir, base), sqlite_path=_rel(settings.sqlite_path, base),
         stage_table=settings.stage_table, batch_size=settings.batch_size,
         truncate_before_load=str(settings.truncate_before_load).lower(),
-        replace_existing_file_rows=str(settings.replace_existing_file_rows).lower(),
+        quality_enabled=str(settings.quality_checks_enabled).lower(),
+        alert_missing_days=str(settings.alert_missing_days).lower(),
+        extra_holidays=", ".join(settings.extra_market_holidays),
         file_patterns=";".join(settings.file_patterns),
         market_from_filename_regex=settings.market_from_filename_regex,
         default_market=settings.default_market, skip_bad_rows=str(settings.skip_bad_rows).lower(),
         encoding=settings.encoding, formats_file=_rel(settings.formats_file, base),
         dashboard_host=settings.dashboard_host, dashboard_port=settings.dashboard_port,
+        secret_key_file=_rel(settings.secret_key_file, base),
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")

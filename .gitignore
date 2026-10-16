@@ -3,6 +3,8 @@ __pycache__/
 logs/*.log*
 data/*.db
 data/*.db-*
+# dashboard session secret - generated locally, never committed
+data/.secret_key
 data/conversion/*
 data/converted/*
 data/loading/*
@@ -10,3 +12,7 @@ data/archive/*
 data/error/*
 data/work/*
 !data/**/.gitkeep
+
+# project virtual environment
+.venv/
+.coverage

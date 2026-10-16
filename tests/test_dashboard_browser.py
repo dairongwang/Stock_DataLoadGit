@@ -66,8 +66,11 @@ class BrowserDashboardTests(TempProjectTestCase):
         from werkzeug.serving import make_server
         from stock_dataload.dashboard import create_app
 
+        from stock_dataload.auth import UserStore
+
         self.settings.config_file = self.root / "config.ini"
         save_settings(self.settings, self.settings.config_file)
+        UserStore(self.settings).create_user("admin", "Admin-Pass-1", role="admin")
         app = create_app(load_settings(self.settings.config_file))
         self.state = app.extensions["state"]
         self.server = make_server("127.0.0.1", 0, app, threaded=True)
@@ -76,6 +79,15 @@ class BrowserDashboardTests(TempProjectTestCase):
         self.thread.start()
         self.page = self._browser.new_page(viewport={"width": 1280, "height": 900})
         self.page.on("dialog", lambda d: d.accept())   # accept confirm() prompts
+        self.sign_in("admin", "Admin-Pass-1")
+
+    def sign_in(self, username: str, password: str) -> None:
+        pg = self.page
+        pg.goto(self.base + "/login")
+        pg.fill("input[name=username]", username)
+        pg.fill("input[name=password]", password)
+        pg.get_by_role("button", name="Sign in").click()
+        pg.wait_for_load_state()
 
     def tearDown(self):
         self.page.close()
@@ -230,6 +242,164 @@ class BrowserDashboardTests(TempProjectTestCase):
         pg.locator("tr", has_text=".error.txt").get_by_role("button", name="delete").click()
         pg.wait_for_load_state()
         self.assertFalse((self.state.settings.error_dir / "NASDAQ_20250123_reordered.txt.error.txt").exists())
+
+
+    def test_monitoring_pages_track_loads_errors_and_alerts(self):
+        """A user loads a good day, a broken file and a day with a missing stock, then
+        follows the Monitoring pages to see what happened."""
+        loading = self.state.settings.loading_dir
+        header = "<ticker>,<date>,<open>,<high>,<low>,<close>,<vol>\n"
+        (loading / "NYSE_20250109.txt").write_text(
+            header + "AAA,20250109,1,2,0.5,1.5,100\nBBB,20250109,1,2,0.5,1.5,100\n", encoding="utf-8")
+        (loading / "BROKEN_20250109.txt").write_text("a,b\n1,2\n", encoding="utf-8")
+        pg = self.page
+        pg.goto(self.base + "/")
+        pg.get_by_role("button", name="Load all").click()
+        pg.wait_for_load_state()
+        # Friday 10 Jan: BBB missing and AAA's row has high < low
+        (loading / "NYSE_20250110.txt").write_text(
+            header + "AAA,20250110,1,0.4,0.5,1.5,100\n", encoding="utf-8")
+        pg.goto(self.base + "/")
+        pg.get_by_role("button", name="Load all").click()
+        pg.wait_for_load_state()
+        strip = pg.locator(".monitor-strip").inner_text()
+        self.assertIn("1 error(s)", strip)
+        self.assertIn("2 alert(s)", strip)          # AAA (broken row) and BBB (absent)
+
+        pg.click("header nav >> text=Monitoring")
+        pg.wait_for_load_state()
+        self.assertEqual(pg.title(), "Monitoring - dashboard")
+        self.assertIn("loader/insert_rows", pg.locator("main").inner_text())
+        self.assertIn("BBB", pg.locator("main").inner_text())
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):   # refresh the README picture on demand
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_monitoring.png"),
+                          full_page=True)
+
+        pg.click(".monitor-nav >> text=Errors")
+        pg.wait_for_load_state()
+        self.assertIn("FileFormatError", pg.locator("table").inner_text())
+        pg.click("text=stack trace")
+        self.assertIn("Traceback", pg.locator("details pre").first.inner_text())
+
+        pg.click(".monitor-nav >> text=Alerts")
+        pg.wait_for_load_state()
+        rows = pg.locator("table tr").count() - 1
+        self.assertEqual(rows, 2)
+        self.assertIn("missing_market_day", pg.locator("table").inner_text())
+
+        pg.click(".monitor-nav >> text=Data errors")
+        pg.wait_for_load_state()
+        self.assertIn("high_above_low", pg.locator("table").inner_text())
+        pg.fill("input[name=file]", "NYSE_20250109.txt")
+        pg.get_by_role("button", name="Filter").click()
+        pg.wait_for_load_state()
+        self.assertIn("No data errors match", pg.locator("main").inner_text())
+
+        pg.click(".monitor-nav >> text=Load history")
+        pg.wait_for_load_state()
+        text = pg.locator("table").inner_text()
+        self.assertIn("BROKEN_20250109.txt", text)
+        self.assertIn("failed", text)
+
+        pg.click(".monitor-nav >> text=Activity log")
+        pg.wait_for_load_state()
+        pg.select_option("select[name=level]", "ALERT")
+        pg.get_by_role("button", name="Filter").click()
+        pg.wait_for_load_state()
+        self.assertEqual(pg.locator("span.badge", has_text="ALERT").count(), 2)
+
+
+    def test_correct_a_data_error_by_clicking_through(self):
+        """Data errors page -> 'Correct' -> the row is populated -> fix it -> resolved."""
+        loading = self.state.settings.loading_dir
+        header = "<ticker>,<date>,<open>,<high>,<low>,<close>,<vol>\n"
+        (loading / "NYSE_20250110.txt").write_text(
+            header + "AAA,20250110,1,0.4,0.5,1.5,100\nBBB,20250110,1,2,0.5,1.5,100\n", encoding="utf-8")
+        pg = self.page
+        pg.goto(self.base + "/")
+        pg.get_by_role("button", name="Load all").click()
+        pg.wait_for_load_state()
+
+        pg.goto(self.base + "/monitor/data-errors")
+        row = pg.locator("table tr", has_text="high_above_low")
+        self.assertEqual(row.count(), 1)
+        self.assertIn("open", row.inner_text())
+        row.get_by_role("link", name="Correct").click()
+        pg.wait_for_load_state()
+        self.assertEqual(pg.title(), "Data correction - dashboard")
+        # the same row is populated for correction
+        self.assertIn("high_above_low", pg.locator("main").inner_text())
+        self.assertEqual(pg.input_value("input[name=Ticker]"), "AAA")
+        self.assertEqual(pg.input_value("input[name=TradeDate]"), "20250110")
+        self.assertEqual(pg.input_value("input[name=High]"), "0.4")
+        self.assertEqual(pg.input_value("input[name=Low]"), "0.5")
+
+        # an invalid correction is refused ...
+        pg.fill("input[name=High]", "0.2")
+        pg.get_by_role("button", name="Save correction").click()
+        pg.wait_for_load_state()
+        self.assertIn("smaller than low", pg.locator(".flash.error").inner_text())
+        # ... a valid one is saved
+        pg.fill("input[name=High]", "2")
+        pg.fill("input[name=note]", "high and low were swapped")
+        pg.get_by_role("button", name="Save correction").click()
+        pg.wait_for_load_state()
+        self.assertIn("Correction saved", self.flashes()[0])
+        self.assertIn("High: '0.4' -> '2'", self.flashes()[0])
+        self.assertIn("high and low were swapped", pg.locator("main").inner_text())
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_correction.png"),
+                          full_page=True)
+        stage = StageDatabase(self.state.settings)
+        self.assertEqual(stage.find_stage_rows(ticker="AAA", trade_date="20250110")[0]["High"], "2")
+
+        pg.click("text=Back to data errors")
+        pg.wait_for_load_state()
+        row = pg.locator("table tr", has_text="high_above_low")
+        self.assertIn("resolved", row.inner_text())
+
+
+    def test_sign_in_manage_users_and_roles(self):
+        """The administrator adds an operator on the Users page; the operator signs in and
+        sees operator features, but not the administration pages."""
+        pg = self.page
+        self.assertIn("admin", pg.locator("header .userbox").inner_text())
+        pg.click("header nav >> text=Users")
+        pg.wait_for_load_state()
+        self.assertEqual(pg.title(), "Users - dashboard")
+        pg.click("text=+ Add user")
+        pg.wait_for_load_state()
+        pg.fill("input[name=username]", "ops")
+        pg.fill("input[name=display_name]", "Olive Operator")
+        pg.select_option("select[name=role]", "operator")
+        pg.fill("input[name=password]", "Operator-Pass-1")
+        pg.fill("input[name=confirm_password]", "Operator-Pass-1")
+        pg.uncheck("input[name=must_change_password]")
+        pg.get_by_role("button", name="Create user").click()
+        pg.wait_for_load_state()
+        self.assertIn("created with role operator", self.flashes()[0])
+        self.assertIn("Olive Operator", pg.locator("table").inner_text())
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_users.png"),
+                          full_page=True)
+
+        pg.get_by_role("button", name="Sign out").click()
+        pg.wait_for_load_state()
+        self.assertEqual(pg.title(), "Sign in - dashboard")
+        # wrong password is refused
+        pg.fill("input[name=username]", "ops")
+        pg.fill("input[name=password]", "wrong")
+        pg.get_by_role("button", name="Sign in").click()
+        pg.wait_for_load_state()
+        self.assertIn("wrong password", pg.locator(".flash.error").inner_text())
+        self.sign_in("ops", "Operator-Pass-1")
+        self.assertEqual(pg.title(), "Overview - dashboard")
+        nav = pg.locator("header nav").inner_text()
+        self.assertIn("Data correction", nav)
+        self.assertNotIn("Users", nav)
+        self.assertNotIn("Settings", nav)
+        pg.goto(self.base + "/users")
+        self.assertIn("Not allowed", pg.locator("main").inner_text())
 
 
 if __name__ == "__main__":

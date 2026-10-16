@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Data errors{% endblock %}
+{% block content %}
+<h1>Data errors <span class="muted" style="font-size:13px;font-weight:400">Data_Error - data quality findings</span></h1>
+{% include "_monitor_nav.html" %}
+<div class="card">
+  <form method="get" class="toolbar">
+    <label>File <input type="text" name="file" value="{{ args.get('file', '') }}" placeholder="NASDAQ_20250123.txt" style="width:220px"></label>
+    <label><input type="checkbox" name="alerts" value="1" {% if args.get('alerts') == '1' %}checked{% endif %}> alerts only</label>
+    <label><input type="checkbox" name="open" value="1" {% if args.get('open') == '1' %}checked{% endif %}> open only</label>
+    <label>Show <input type="number" name="limit" value="{{ limit }}" min="1" max="5000" style="width:80px"></label>
+    <button type="submit" class="small">Filter</button>
+    <a class="btn small secondary" href="{{ url_for('monitor_data_errors') }}">Reset</a>
+    <a class="btn small secondary" href="{{ url_for('api_data_errors', **args) }}" style="margin-left:auto">JSON</a>
+  </form>
+  {% if records %}
+  <table>
+    <tr><th>When</th><th>Severity</th><th>Rule</th><th>Ticker</th><th>Date</th><th>Column</th><th>Value</th><th class="wrap">Finding</th><th>File</th><th class="num">Line</th><th>Status</th><th></th></tr>
+    {% for d in records %}
+    <tr class="{{ 'resolved' if d.resolved }}">
+      <td class="muted">{{ d.detected_at }}</td>
+      <td><span class="badge {{ 'err' if d.alert else 'warn' }}">{{ 'ALERT' if d.alert else d.severity }}</span></td>
+      <td class="mono">{{ d.rule }}</td>
+      <td class="mono"><b>{{ d.ticker or '' }}</b></td>
+      <td class="mono">{{ d.trade_date or '' }}</td>
+      <td class="mono">{{ d.column_name or '' }}</td>
+      <td class="mono">{{ d.value or '' }}</td>
+      <td class="wrap">{{ d.error_message }}</td>
+      <td class="mono">{{ d.source_file or '' }}</td>
+      <td class="num">{{ d.line_no or '' }}</td>
+      <td>{% if d.resolved %}<span class="badge ok" title="{{ d.resolved_at }} {{ d.resolution_note or '' }}">resolved</span>{% else %}<span class="badge">open</span>{% endif %}</td>
+      <td>{% if can('operator') %}<a class="btn small {{ 'secondary' if d.resolved }}" href="{{ url_for('correct', data_error_id=d.data_error_id) }}">Correct</a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted ok">No data errors match.</p>{% endif %}
+</div>
+{% endblock %}

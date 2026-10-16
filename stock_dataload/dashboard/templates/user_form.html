@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit user' if user else 'Add user' }}{% endblock %}
+{% block content %}
+<h1>{{ 'Edit user ' ~ user.username if user else 'Add user' }}</h1>
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+<div class="card" style="max-width:720px">
+<form method="post">
+  <div class="form-grid" style="grid-template-columns:200px 1fr">
+    {% if not user %}
+    <label for="username">User name</label><input type="text" id="username" name="username" value="{{ form.get('username', '') }}" required autocomplete="off">
+    <div class="help">2-64 characters: letters, digits, '.', '_', '@' or '-'</div>
+    {% endif %}
+    <label for="display_name">Name</label><input type="text" id="display_name" name="display_name" value="{{ form.get('display_name') or '' }}">
+    <label for="role">Role</label>
+    <select id="role" name="role" style="width:100%">
+      {% for r in roles %}<option value="{{ r }}" {% if form.get('role', 'viewer') == r %}selected{% endif %}>{{ role_labels[r] }}</option>{% endfor %}
+    </select>
+    {% if user %}
+    <label>Status</label><span><input type="checkbox" name="active" {% if form.get('active') in (True, 'on') %}checked{% endif %} {% if current_user and user.user_id == current_user.user_id %}disabled{% endif %}> active (a disabled user cannot sign in)</span>
+    <label for="new_password">New password</label><input type="password" id="new_password" name="new_password" minlength="8" autocomplete="new-password" placeholder="leave empty to keep the current password">
+    <label for="confirm_password">Repeat new password</label><input type="password" id="confirm_password" name="confirm_password" minlength="8" autocomplete="new-password">
+    {% else %}
+    <label for="password">Password</label><input type="password" id="password" name="password" required minlength="8" autocomplete="new-password">
+    <label for="confirm_password">Repeat password</label><input type="password" id="confirm_password" name="confirm_password" required minlength="8" autocomplete="new-password">
+    {% endif %}
+    <div class="help">at least 8 characters; tell the user in person - it is never stored in clear text</div>
+    <label>First sign-in</label><span><input type="checkbox" name="must_change_password" {% if form.get('must_change_password') in (True, 'on') or not user %}checked{% endif %}> the user must choose a new password at the next sign-in</span>
+  </div>
+  <div class="actions">
+    <button type="submit">{{ 'Save' if user else 'Create user' }}</button>
+    <a class="btn secondary" href="{{ url_for('users') }}">Cancel</a>
+  </div>
+</form>
+</div>
+{% endblock %}

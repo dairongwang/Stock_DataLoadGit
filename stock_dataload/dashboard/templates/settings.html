@@ -30,7 +30,7 @@
     <label>Staging table</label><input type="text" name="stage_table" value="{{ s.stage_table }}">
     <label>Batch size</label><input type="number" name="batch_size" value="{{ s.batch_size }}" min="1" style="width:110px">
     <label>Truncate before load</label><span><input type="checkbox" name="truncate_before_load" {% if s.truncate_before_load %}checked{% endif %}> empty the staging table at the start of every load run</span>
-    <label>Replace re-loaded files</label><span><input type="checkbox" name="replace_existing_file_rows" {% if s.replace_existing_file_rows %}checked{% endif %}> loading a file name again replaces its previous rows</span>
+    <label>Re-loaded files</label><span class="muted">loading a file name again always deletes its previous rows first - only one copy per file</span>
   </div>
 </fieldset>
 <fieldset><legend>Loader</legend>

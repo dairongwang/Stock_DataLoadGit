@@ -54,3 +54,31 @@ td .note { white-space: normal; max-width: 420px; font-size: 12px; line-height: 
 td.wrap, th.wrap { white-space: normal; }
 .preview-table td, .preview-table th { white-space: nowrap; }
 .kv span:nth-child(even) { white-space: normal; }
+
+/* monitoring pages */
+.monitor-nav { display:flex; gap:6px; flex-wrap:wrap; margin:0 0 16px; }
+.monitor-nav a { text-decoration:none; color:#374151; background:#e5e7eb; border-radius:16px; padding:4px 12px; font-size:13px; }
+.monitor-nav a.active { background:#111827; color:#fff; }
+.monitor-nav a .badge { background:#fff; margin-left:4px; }
+.monitor-nav a.active .badge { background:#374151; color:#fff; }
+.badge.warn { background:#fef3c7; color:#92400e; }
+.stats { display:grid; grid-template-columns:repeat(5, 1fr); gap:12px; margin-bottom:18px; }
+.stat-card { text-decoration:none; color:inherit; text-align:center; margin:0; }
+.stat-card:hover { border-color:#9ca3af; }
+.stat-card.bad { border-color:#fecaca; background:#fef2f2; }
+.stat-card.bad .stat { color:var(--err); }
+.stat-card.warnish { border-color:#fde68a; background:#fffbeb; }
+.details summary { cursor:pointer; color:var(--muted); font-size:12px; }
+.details pre { white-space:pre-wrap; font-size:11px; background:#f3f4f6; padding:8px; border-radius:6px; max-height:260px; overflow:auto; }
+.monitor-strip { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+tr.resolved td { color:var(--muted); }
+.issue-list { margin:8px 0 0; padding-left:18px; color:var(--err); }
+.form-grid input.bad { border-color:var(--err); background:#fef2f2; }
+.row-view { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px 14px; font-size:13px; margin:6px 0 12px; }
+.row-view b { display:block; font-size:11px; color:var(--muted); text-transform:uppercase; }
+
+/* authentication */
+.userbox { margin-left:auto; display:flex; gap:8px; align-items:center; color:#d1d5db; font-size:13px; }
+.userbox a { color:#fff; text-decoration:none; }
+.login-card { max-width:420px; margin:60px auto; }
+body.role-viewer main form[method="post"], body.role-viewer main form[method=post] { display:none; }

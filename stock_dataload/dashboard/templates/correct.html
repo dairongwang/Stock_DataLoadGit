@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Data correction{% endblock %}
+{% block content %}
+<h1>Data correction <span class="muted" style="font-size:13px;font-weight:400">staging table <code>{{ settings.stage_table }}</code></span></h1>
+<p class="muted">Find a row of the staging table and correct its values, or add a row that is missing.
+Corrections are validated with the same business rules as a load, recorded in <code>Data_Correction</code>
+and resolve the related <a href="{{ url_for('monitor_data_errors') }}">data errors</a>.</p>
+
+{% if data_error %}
+<div class="card" style="border-color:{{ '#fecaca' if data_error.alert else '#fde68a' }}">
+  <h2>Data error #{{ data_error.data_error_id }}
+    <span class="badge {{ 'err' if data_error.alert else 'warn' }}">{{ 'ALERT' if data_error.alert else data_error.severity }}</span>
+    {% if data_error.resolved %}<span class="badge ok">resolved {{ data_error.resolved_at }}</span>{% endif %}</h2>
+  <div class="kv">
+    <span class="muted">rule</span><span class="mono">{{ data_error.rule }}</span>
+    <span class="muted">finding</span><span>{{ data_error.error_message }}</span>
+    <span class="muted">row</span><span class="mono">{{ data_error.ticker or '-' }} {{ data_error.trade_date or '' }}{% if data_error.column_name %} &middot; column {{ data_error.column_name }} = <b>{{ data_error.value }}</b>{% endif %}</span>
+    <span class="muted">file</span><span class="mono">{{ data_error.source_file or '-' }}{% if data_error.line_no %} line {{ data_error.line_no }}{% endif %}</span>
+  </div>
+</div>
+{% endif %}
+
+{% if mode == 'search' %}
+<div class="card">
+  <h2>Find the row to correct</h2>
+  <form method="get" class="toolbar">
+    <label>Stage id <input type="text" name="stage_id" value="{{ args.get('stage_id', '') }}" style="width:90px" placeholder="e.g. 1234"></label>
+    <span class="muted">or</span>
+    <label>Ticker <input type="text" name="ticker" value="{{ args.get('ticker', '') }}" style="width:100px" placeholder="AACG"></label>
+    <label>Trade date <input type="text" name="trade_date" value="{{ args.get('trade_date', '') }}" style="width:110px" placeholder="YYYYMMDD"></label>
+    <label>Market <input type="text" name="market" value="{{ args.get('market', '') }}" style="width:90px" placeholder="NASDAQ"></label>
+    <label>Source file <input type="text" name="source_file" value="{{ args.get('source_file', '') }}" style="width:220px" placeholder="NASDAQ_20250123.txt"></label>
+    <button type="submit" class="small">Find</button>
+  </form>
+  <p class="muted">Tip: every finding on the <a href="{{ url_for('monitor_data_errors') }}">data errors</a> page has a <b>Correct</b> link that opens its row here.</p>
+</div>
+{% endif %}
+
+{% if mode == 'choose' %}
+<div class="card">
+  <h2>{{ rows|length }} rows match - pick the one to correct</h2>
+  <table>
+    <tr><th class="num">Stage id</th><th>Market</th><th>Ticker</th><th>Date</th><th class="num">Open</th><th class="num">High</th><th class="num">Low</th><th class="num">Close</th><th class="num">Vol</th><th>File</th><th>Loaded</th><th></th></tr>
+    {% for r in rows %}
+    <tr>
+      <td class="num mono">{{ r.StageId }}</td><td>{{ r.Market }}</td><td class="mono"><b>{{ r.Ticker }}</b></td><td class="mono">{{ r.TradeDate }}</td>
+      <td class="num mono">{{ r.Open }}</td><td class="num mono">{{ r.High }}</td><td class="num mono">{{ r.Low }}</td><td class="num mono">{{ r.Close }}</td><td class="num mono">{{ r.Vol }}</td>
+      <td class="mono">{{ r.SourceFile }}</td><td class="muted">{{ r.LoadedAt }}</td>
+      <td><a class="btn small" href="{{ url_for('correct', stage_id=r.StageId, data_error_id=data_error.data_error_id if data_error else None) }}">Correct</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+{% if mode in ('edit', 'insert') %}
+<div class="card">
+  {% if mode == 'edit' %}
+  <h2>Correct staging row <span class="mono">#{{ row.StageId }}</span></h2>
+  <div class="row-view">
+    <div><b>Source file</b><span class="mono">{{ row.SourceFile }}</span></div>
+    <div><b>Load id</b><span class="mono">{{ row.LoadId }}</span></div>
+    <div><b>Loaded at</b>{{ row.LoadedAt }}</div>
+    <div><b>Current values</b><span class="mono">{{ row.Ticker }} {{ row.TradeDate }} o={{ row.Open }} h={{ row.High }} l={{ row.Low }} c={{ row.Close }} v={{ row.Vol }}</span></div>
+  </div>
+  {% if open_errors %}
+  <p class="warn">Open data errors for this row:</p>
+  <ul class="issue-list">{% for d in open_errors %}<li><span class="mono">{{ d.rule }}</span>: {{ d.error_message }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% else %}
+  <h2>Add the missing row</h2>
+  <p class="muted">There is no row in the staging table for this stock and day. Fill in the values to add it
+  (it is stored with load id <code>manual_correction</code>).</p>
+  {% endif %}
+
+  {% if error %}<div class="flash error">{{ error }}{% if issues %}<ul class="issue-list">{% for i in issues %}<li>{{ i.message }}</li>{% endfor %}</ul>{% endif %}</div>{% endif %}
+
+  <form method="post" action="{{ url_for('correct_save') }}">
+    <input type="hidden" name="action" value="{{ 'insert' if mode == 'insert' else 'update' }}">
+    {% if mode == 'edit' %}<input type="hidden" name="stage_id" value="{{ row.StageId }}">{% endif %}
+    {% if data_error %}<input type="hidden" name="data_error_id" value="{{ data_error.data_error_id }}">{% endif %}
+    <div class="form-grid" style="max-width:620px">
+      {% if mode == 'insert' %}
+      <label for="SourceFile">Source file</label><input type="text" id="SourceFile" name="SourceFile" value="{{ values.get('SourceFile', '') }}" placeholder="file the row belongs to (optional)">
+      {% endif %}
+      <label for="Market">Market</label><input type="text" id="Market" name="Market" value="{{ values.get('Market', '') }}" class="{{ 'bad' if 'Market' in bad }}">
+      <label for="Ticker">Ticker</label><input type="text" id="Ticker" name="Ticker" value="{{ values.get('Ticker', '') }}" class="{{ 'bad' if 'Ticker' in bad }}" required>
+      <label for="TradeDate">Trade date (YYYYMMDD)</label><input type="text" id="TradeDate" name="TradeDate" value="{{ values.get('TradeDate', '') }}" class="{{ 'bad' if 'TradeDate' in bad }}" required>
+      <label for="Open">Open</label><input type="text" id="Open" name="Open" value="{{ values.get('Open', '') }}" class="{{ 'bad' if 'Open' in bad }}">
+      <label for="High">High</label><input type="text" id="High" name="High" value="{{ values.get('High', '') }}" class="{{ 'bad' if 'High' in bad }}">
+      <label for="Low">Low</label><input type="text" id="Low" name="Low" value="{{ values.get('Low', '') }}" class="{{ 'bad' if 'Low' in bad }}">
+      <label for="Close">Close</label><input type="text" id="Close" name="Close" value="{{ values.get('Close', '') }}" class="{{ 'bad' if 'Close' in bad }}">
+      <label for="Vol">Vol</label><input type="text" id="Vol" name="Vol" value="{{ values.get('Vol', '') }}" class="{{ 'bad' if 'Vol' in bad }}">
+      <label for="note">Note</label><input type="text" id="note" name="note" value="{{ request.form.get('note', '') }}" placeholder="why the value was corrected (optional)">
+      <div class="help">Rules: the date must be a valid YYYYMMDD calendar date, open/high/low/close/vol must be numbers, high must not be smaller than low.</div>
+    </div>
+    <div class="actions">
+      <button type="submit">{{ 'Add row' if mode == 'insert' else 'Save correction' }}</button>
+      <a class="btn secondary" href="{{ url_for('correct') }}">Find another row</a>
+      <a class="btn secondary" href="{{ url_for('monitor_data_errors') }}">Back to data errors</a>
+    </div>
+  </form>
+</div>
+
+{% if history %}
+<div class="card">
+  <h2>Corrections of this row</h2>
+  <table>
+    <tr><th>When</th><th>Action</th><th>Column</th><th>Old value</th><th>New value</th><th>Data error</th><th class="wrap">Note</th></tr>
+    {% for c in history %}
+    <tr><td class="muted">{{ c.corrected_at }}</td><td>{{ c.action }}</td><td class="mono">{{ c.column_name }}</td>
+      <td class="mono">{{ c.old_value if c.old_value is not none else '' }}</td><td class="mono"><b>{{ c.new_value }}</b></td>
+      <td>{% if c.data_error_id %}<a href="{{ url_for('correct', data_error_id=c.data_error_id) }}">#{{ c.data_error_id }}</a>{% endif %}</td>
+      <td class="wrap">{{ c.note or '' }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endif %}
+
+{% if mode == 'search' %}
+<div class="card">
+  <h2>Recent corrections <a class="btn small secondary" style="float:right" href="{{ url_for('api_corrections') }}">JSON</a></h2>
+  {% if recent %}
+  <table>
+    <tr><th>When</th><th>Action</th><th class="num">Stage id</th><th>Ticker</th><th>Date</th><th>Column</th><th>Old value</th><th>New value</th><th>File</th><th class="wrap">Note</th></tr>
+    {% for c in recent %}
+    <tr><td class="muted">{{ c.corrected_at }}</td><td>{{ c.action }}</td>
+      <td class="num"><a href="{{ url_for('correct', stage_id=c.stage_id) }}">{{ c.stage_id }}</a></td>
+      <td class="mono">{{ c.ticker or '' }}</td><td class="mono">{{ c.trade_date or '' }}</td><td class="mono">{{ c.column_name }}</td>
+      <td class="mono">{{ c.old_value if c.old_value is not none else '' }}</td><td class="mono"><b>{{ c.new_value }}</b></td>
+      <td class="mono">{{ c.source_file or '' }}</td><td class="wrap">{{ c.note or '' }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No corrections yet.</p>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

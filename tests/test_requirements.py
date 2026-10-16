@@ -335,10 +335,13 @@ class R5_DashboardConfigurationTests(TempProjectTestCase):
         from stock_dataload.dashboard import create_app
         self.settings.config_file = self.root / "config.ini"
         save_settings(self.settings, self.settings.config_file)
+        from stock_dataload.auth import UserStore
+        UserStore(self.settings).create_user("admin", "Admin-Pass-1", role="admin")
         app = create_app(load_settings(self.settings.config_file))
         app.config["TESTING"] = True
         client = app.test_client()
         state = app.extensions["state"]
+        self.assertEqual(client.post("/login", data={"username": "admin", "password": "Admin-Pass-1"}).status_code, 302)
 
         # custom format via the Formats page
         r = client.post("/formats/new", data={"name": "vendor_json", "file_type": "json", "file_pattern": "vendor_*.json",
@@ -351,7 +354,7 @@ class R5_DashboardConfigurationTests(TempProjectTestCase):
         form = {"conversion_dir": "drop_zone", "converted_dir": str(s.converted_dir), "loading_dir": "to_load",
                 "archive_dir": str(s.archive_dir), "error_dir": str(s.error_dir), "work_dir": str(s.work_dir),
                 "log_dir": str(s.log_dir), "formats_file": str(s.formats_file), "sqlite_path": str(s.sqlite_path),
-                "stage_table": s.stage_table, "batch_size": "5000", "replace_existing_file_rows": "on",
+                "stage_table": s.stage_table, "batch_size": "5000",
                 "file_patterns": "*.txt", "market_from_filename_regex": s.market_from_filename_regex,
                 "default_market": "", "encoding": "utf-8-sig"}
         r = client.post("/settings", data=form)

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div class="toolbar"><h1 style="margin:0">Users</h1><a class="btn" href="{{ url_for('user_new') }}" style="margin-left:auto">+ Add user</a></div>
+<p class="muted">Accounts are stored in the <code>App_User</code> table with a salted PBKDF2 password hash - no password is ever stored or kept in the repository.
+Roles: {% for r in roles %}<b>{{ r }}</b>{% if not loop.last %} &lt; {% endif %}{% endfor %}.</p>
+<div class="card">
+<table>
+  <tr><th>User name</th><th>Name</th><th>Role</th><th>Status</th><th>Created</th><th>Last sign-in</th><th></th></tr>
+  {% for u in users %}
+  <tr class="{{ '' if u.active else 'resolved' }}">
+    <td class="mono"><b>{{ u.username }}</b>{% if current_user and u.user_id == current_user.user_id %} <span class="badge">you</span>{% endif %}</td>
+    <td>{{ u.display_name or '' }}</td>
+    <td><span class="badge {{ 'type' if u.role == 'admin' }}">{{ u.role }}</span></td>
+    <td>{% if u.active %}<span class="badge ok">active</span>{% else %}<span class="badge err">disabled</span>{% endif %}
+        {% if u.must_change_password %}<span class="badge warn" title="must change the password at the next sign-in">password change pending</span>{% endif %}</td>
+    <td class="muted">{{ u.created_at }}{% if u.created_by %} <span class="muted">by {{ u.created_by }}</span>{% endif %}</td>
+    <td class="muted">{{ u.last_login_at or '-' }}</td>
+    <td style="white-space:nowrap">
+      <a class="btn small secondary" href="{{ url_for('user_edit', user_id=u.user_id) }}">Edit</a>
+      {% if current_user and u.user_id != current_user.user_id %}
+      <form method="post" action="{{ url_for('user_delete', user_id=u.user_id) }}" class="inline" onsubmit="return confirm('Delete user {{ u.username }}?')"><button class="small danger">Delete</button></form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

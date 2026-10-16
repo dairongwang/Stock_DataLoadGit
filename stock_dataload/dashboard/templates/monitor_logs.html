@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Activity log{% endblock %}
+{% block content %}
+<h1>Activity log <span class="muted" style="font-size:13px;font-weight:400">App_Log</span></h1>
+{% include "_monitor_nav.html" %}
+<div class="card">
+  <form method="get" class="toolbar">
+    <label>Level
+      <select name="level"><option value="">all</option>
+        {% for lv in levels %}<option value="{{ lv }}" {% if args.get('level') == lv %}selected{% endif %}>{{ lv }}</option>{% endfor %}
+      </select></label>
+    <label>Component <input type="text" name="component" value="{{ args.get('component', '') }}" placeholder="loader / converter / cli" style="width:180px"></label>
+    <label>Show <input type="number" name="limit" value="{{ limit }}" min="1" max="5000" style="width:80px"></label>
+    <button type="submit" class="small">Filter</button>
+    <a class="btn small secondary" href="{{ url_for('monitor_logs') }}">Reset</a>
+    <a class="btn small secondary" href="{{ url_for('api_logs', **args) }}" style="margin-left:auto">JSON</a>
+  </form>
+  {% if records %}
+  <table>
+    <tr><th>When</th><th>Level</th><th>Component</th><th>Event</th><th>File</th><th class="wrap">Message</th><th>Load id</th></tr>
+    {% for l in records %}
+    <tr>
+      <td class="muted">{{ l.logged_at }}</td>
+      <td><span class="badge {{ 'err' if l.level in ('ERROR', 'ALERT') else 'warn' if l.level == 'WARNING' else '' }}">{{ l.level }}</span></td>
+      <td>{{ l.component }}</td>
+      <td class="mono">{{ l.event }}</td>
+      <td class="mono">{{ l.source_file or '' }}</td>
+      <td class="wrap">{{ l.message or '' }}{% if l.details %}<details class="details"><summary>details</summary><pre>{{ l.details }}</pre></details>{% endif %}</td>
+      <td class="mono muted">{{ (l.load_id or '')[:8] }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No log entries match.</p>{% endif %}
+</div>
+{% endblock %}

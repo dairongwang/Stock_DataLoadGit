@@ -34,6 +34,18 @@ Files in other layouts or types ({{ supported }}) go to the <b>conversion folder
 </div>
 
 <div class="card">
+  <div class="monitor-strip">
+    <h2 style="margin:0">Operations monitoring</h2>
+    <a class="btn small secondary" href="{{ url_for('monitor_history') }}">{{ monitor.loads }} load attempt(s){% if monitor.failed_loads %}, <span class="err">{{ monitor.failed_loads }} failed</span>{% endif %}</a>
+    <a class="btn small {{ 'danger' if monitor.errors else 'secondary' }}" href="{{ url_for('monitor_errors') }}">{{ monitor.errors }} error(s)</a>
+    <a class="btn small secondary" href="{{ url_for('monitor_data_errors') }}">{{ monitor.data_errors }} data error(s)</a>
+    <a class="btn small {{ 'danger' if monitor.alerts else 'secondary' }}" href="{{ url_for('monitor_data_errors', alerts=1) }}">{{ monitor.alerts }} alert(s)</a>
+    <a class="btn small secondary" href="{{ url_for('monitor_logs') }}">activity log</a>
+    <a href="{{ url_for('monitor') }}" style="margin-left:auto">Monitoring page &#8594;</a>
+  </div>
+</div>
+
+<div class="card">
   <div class="toolbar">
     <h2 style="margin:0">Files waiting for conversion</h2>
     <form method="post" action="{{ url_for('convert_all') }}" class="inline" style="margin-left:auto">

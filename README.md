@@ -1,11 +1,11 @@
-# stock_dataload – Python port of the `Stock_DataLoad` SSIS package
+# stock_dataload
 
-Loads daily stock trading data files (e.g. `NASDAQ_20250123.txt`) from a
-**loading folder** into a SQLite **staging table**, ships a **conversion
-module** that turns files delivered in other layouts / file types
-(**CSV, delimited text, Excel, JSON, XML**) into the default layout first,
-and a **web dashboard** where business users configure custom file
-formats, the conversion folder and the loading folder.
+Loads daily stock trading files (e.g. `NASDAQ_20250123.txt`) from a **loading
+folder** into a SQLite **staging table**. Files delivered in other layouts or
+file types (**CSV, delimited text, Excel, JSON, XML**) are first **converted**
+to the default layout. A **web dashboard** lets business users manage file
+formats, folders and loads, and **monitor** the activity log, errors and data
+quality findings.
 
 ```
   conversion folder              loading folder                     database
@@ -14,273 +14,412 @@ formats, the conversion folder and the loading folder.
   column sequence                always a .txt text file             (SQLite)
 ```
 
+Python port of the `Stock_DataLoad` SSIS package.
 
-## Requirements
+---
 
-* Python 3.10+. Converting csv/text/json/xml and loading need the **standard library only**.
-* `pip install flask` for the dashboard, `pip install openpyxl` to read Excel files
-  (`pip install -r requirements.txt`).
+## 1. Installation
 
-## Folder layout
+Requires **Python 3.10+**. Everything is installed into the project's own
+virtual environment (`.venv`) – nothing is installed globally.
 
-```
-stock_dataload_py/
-├── config.ini                 settings: folders, database, loader options (editable in the dashboard)
-├── formats.json               custom file formats (editable in the dashboard)
-├── stock_dataload/            the package
-│   ├── formats.py             default format definition + header alias table
-│   ├── file_formats.py        FileFormat model + FormatStore (formats.json)
-│   ├── readers.py             csv / text / excel / json / xml readers
-│   ├── converter.py           any source -> default format text file -> loading folder
-│   ├── loader.py              loading folder -> staging table
-│   ├── db.py                  staging table (SQLite)
-│   ├── config.py              config.ini handling (load + save)
-│   ├── cli.py                 python -m stock_dataload ...
-│   └── dashboard/             Flask web dashboard (app.py, templates/, static/)
-├── data/
-│   ├── conversion/            <-- THE CONVERSION FOLDER: source files in any supported format
-│   ├── converted/             source files after a successful conversion
-│   ├── loading/               <-- THE LOADING FOLDER: default-format .txt files waiting to be loaded
-│   ├── archive/               files that were loaded successfully
-│   ├── error/                 files that failed + <file>.error.txt / <file>.rejects.txt reports
-│   └── work/                  scratch space for the converter
-├── samples/                   NASDAQ_20250123.txt + the same data as csv / tsv / txt / xlsx / json / xml
-│   └── make_samples.py        regenerates the test files from the original
-├── sql/                       DDL script for reference
-├── tests/                     unittest suite (python -m unittest discover -s tests -t .)
-└── logs/                      stock_dataload.log (rotating)
+### Windows (Command Prompt or PowerShell)
+
+```bat
+cd Stock_DataLoadGit
+py -m venv .venv
+.venv\Scripts\activate
+python -m pip install -r requirements.txt
+python -m stock_dataload --help
 ```
 
-## Dashboard
+* `py` is the Python launcher that comes with the python.org installer.
+  If `py` is not found, use `python -m venv .venv`.
+  (`python3` is **not** a Windows command – it only opens the Microsoft
+  Store alias, which is why `python3 -m venv .venv` fails.)
+* Paths on Windows use `.venv\Scripts\...`, not `.venv/bin/...`.
+* PowerShell may refuse to run `activate` ("running scripts is disabled").
+  Run once: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then
+  `.venv\Scripts\Activate.ps1`.
+* Without activating the venv, call the tools by their full path instead:
+  `.venv\Scripts\python -m pip install -r requirements.txt` and
+  `.venv\Scripts\python -m stock_dataload --help`.
+
+### macOS / Linux
 
 ```bash
-pip install -r requirements.txt
-python -m stock_dataload dashboard            # http://127.0.0.1:8050  (host/port in config.ini [dashboard])
+cd Stock_DataLoadGit
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m stock_dataload --help
 ```
 
-| Page | What business users do there |
-|------|------------------------------|
-| **Overview** | see the pipeline *conversion folder → loading folder → staging table*; upload files; pick a format per file (a matching custom format is pre-selected) and **Convert** / **Convert all**; **Preview** a conversion before running it; **Load** / **Load all**; recent loads, error reports, archive. Files in the loading folder are checked and marked *default format* / *not loadable*. |
-| **File formats** | create / edit / clone / delete custom formats: file type (auto, csv, text, excel, json, xml), file-name pattern for automatic selection, delimiter, header row, rows to skip, date format, encoding, Excel sheet, JSON record path, XML record tag, and the column mapping (auto by names, column sequence, or map each of the 7 target columns to a source field / `#position` / `=constant`). **Run preview** tests the format against a file in the conversion folder before saving. |
-| **Settings** | configure the **conversion folder**, the **loading folder**, converted / archive / error / work / log folders, the SQLite file and staging table, the formats file, and loader options. Saved to `config.ini`; folders are created on the fly. |
+(Without activating: `.venv/bin/python -m pip install -r requirements.txt`,
+`.venv/bin/python -m stock_dataload --help`.)
 
-The dashboard is a thin front end: it calls the same `FileConverter` /
-`StageLoader` classes as the CLI, so everything it does can also be
-scripted or scheduled.  A JSON status endpoint is available at `/api/status`.
+All commands below assume the venv is **activated** (`(.venv)` shows in the
+prompt), so `python` is the venv's Python on every platform.
 
-![overview](docs/dashboard_overview.png)
+What gets installed: `flask` (dashboard), `openpyxl` (Excel files),
+`coverage` and `playwright` (tests). Converting csv/text/json/xml and
+loading need the standard library only.
 
-Preview before converting, the format editor with "Run preview", and the settings page:
+---
 
-![preview](docs/dashboard_preview.png)
-![format editor](docs/dashboard_format_editor.png)
-![settings](docs/dashboard_settings.png)
-
-## Supported source file types
-
-| Type | Extensions | Notes |
-|------|------------|-------|
-| CSV / delimited text | `.csv .txt .tsv .dat .prn .psv` | delimiter auto-detected (`, ; \| tab`), optional header, quoted fields, title rows (`skip_rows`) |
-| Excel | `.xlsx .xlsm` | sheet by name or number, title rows, numeric and date cells (needs `openpyxl`; legacy `.xls` → save as `.xlsx`) |
-| JSON | `.json .jsonl .ndjson` | list of objects, nested objects (`prices.open`), object with the list under a path (`record_path`, auto-detected), list of arrays, JSON lines |
-| XML | `.xml` | one element per record (`record_tag`, auto-detected); fields from attributes and child elements, `<field name="...">` style |
-
-Whatever the source, the **output is always the same**: a comma separated
-`.txt` file with the default header `<ticker>,<date>,<open>,<high>,<low>,<close>,<vol>`
-and dates as `YYYYMMDD` – the only thing the loader accepts.
-
-### Test files
-
-`samples/make_samples.py` derives these from `NASDAQ_20250123.txt`; converting
-any of them yields a file **byte-identical** to the original (verified by the tests):
-
-| File | Layout |
-|------|--------|
-| `NASDAQ_20250123_reordered.txt` | text, `<date>,<ticker>,<vol>,<close>,<open>,<high>,<low>` |
-| `NASDAQ_20250123.csv` | CSV, `Symbol,Open,High,Low,Close,Volume,Date` |
-| `NASDAQ_20250123_broker.csv` | `;` delimited, `Symbol;Trade Date;Volume;Close;Open;High;Low;Currency`, ISO dates |
-| `NASDAQ_20250123.tsv` | tab delimited, `ticker close vol date open high low` |
-| `NASDAQ_20250123_noheader.txt` | `\|` delimited, no header (format `pipe_noheader`) |
-| `NASDAQ_20250123.xlsx` | Excel, sheet *Prices*, title row, numeric cells (format `excel_prices`) |
-| `NASDAQ_20250123.json` | nested JSON: `{"data": [{"symbol", "date", "prices": {"open", ...}, "volume"}]}` |
-| `NASDAQ_20250123.xml` | `<quote symbol=".." date=".."><open>..</open>...<volume>..</volume></quote>` |
-
-## Quick start
+## 2. Quick start
 
 ```bash
-cd stock_dataload_py
+python -m stock_dataload init-db                        # create the tables (data/stock_trade.db)
 
-# 1. create the staging table (SQLite file data/stock_trade.db by default)
-python -m stock_dataload init-db
-
-# 2. drop a default-format file into the loading folder and load it
-cp samples/NASDAQ_20250123.txt data/loading/
+# load a default-format file
+copy samples\NASDAQ_20250123.txt data\loading\          # Windows   (cp ... on macOS/Linux)
 python -m stock_dataload load
 #   NASDAQ_20250123.txt: loaded (4092 rows, market=NASDAQ, load_id=...)
 
-# 3. a file in a different column sequence / file type?  convert it first - the
-#    converted .txt is written to data/loading/ automatically, then load as usual
-python -m stock_dataload convert samples/NASDAQ_20250123_reordered.txt
+# a file in another layout / file type: convert it first (result lands in data/loading/)
 python -m stock_dataload convert samples/NASDAQ_20250123.xlsx samples/NASDAQ_20250123.json --rename
 python -m stock_dataload load
 
-#    or drop files into data/conversion/ and convert the whole folder
-cp samples/NASDAQ_20250123.xml data/conversion/ && python -m stock_dataload convert-folder
+# or put files into data/conversion/ and convert the whole folder
+python -m stock_dataload convert-folder
 
-#    or use the dashboard for all of the above
-python -m stock_dataload dashboard
-
-# 4. what is in the staging table?
+# what happened?
 python -m stock_dataload status
+python -m stock_dataload logs
+python -m stock_dataload data-errors --alerts
+
+# or do all of this in the browser
+python -m stock_dataload dashboard                      # http://127.0.0.1:8050
 ```
 
 All commands accept `--config FILE`, `-v` (debug) and `-q` (quiet).
 
-## The default file format
+---
+
+## 3. Dashboard
+
+```bash
+python -m stock_dataload dashboard            # host/port in config.ini [dashboard]
+```
+
+### Signing in – the initial administrator
+
+Every page requires a signed-in user. **No account or secret is shipped with
+the repository**; create the first administrator in one of two ways:
+
+```bash
+# a) before the first start - prompts for the password (nothing is echoed or stored in clear text)
+python -m stock_dataload user add admin --role admin
+
+# b) just start the dashboard: with an empty user table it creates 'admin' with a random
+#    ONE-TIME password that is printed to the console (or set STOCK_DATALOAD_ADMIN_PASSWORD)
+python -m stock_dataload dashboard
+#   ========================================================================
+#     Initial administrator created: username 'admin'
+#     One-time password: Xk7pQ2...            <- change it at the first sign-in
+#   ========================================================================
+```
+
+Sign in at `http://127.0.0.1:8050/login`; the initial administrator has to
+choose a new password first, then adds further users on the **Users** page.
+
+| Role | May |
+|------|-----|
+| `viewer` | read the overview, formats and every monitoring page / JSON api |
+| `operator` | + upload, convert, load, delete files, edit formats, data correction |
+| `admin` | + settings, user management (add / edit / disable / delete users, reset passwords) |
+
+Users can change their own password under their name in the header. All
+sign-ins, failed attempts, denied actions and user changes are written to
+`App_Log` (component `auth`).
+
+Passwords are stored only as salted **PBKDF2-HMAC-SHA256** hashes in the
+`App_User` table. The session-signing secret is read from
+`STOCK_DATALOAD_SECRET` or generated once into the git-ignored
+`data/.secret_key` file – nothing secret ever lives in the repository.
+The same accounts can be managed from the command line:
+
+```
+python -m stock_dataload user list
+python -m stock_dataload user add NAME [--role viewer|operator|admin] [--name "Full Name"] [--must-change]
+python -m stock_dataload user passwd NAME          # password: prompt, --password, or $STOCK_DATALOAD_PASSWORD
+python -m stock_dataload user role NAME ROLE | enable NAME | disable NAME | delete NAME
+```
+
+| Page | What you do there |
+|------|-------------------|
+| **Overview** | the pipeline *conversion folder → loading folder → staging table*: upload files, pick a format per file (a matching custom format is pre-selected), **Convert** / **Preview** / **Load**, recent loads, error reports, and a **monitoring strip** with the current error / alert counts. |
+| **File formats** | create / edit / clone / delete custom formats: file type, file-name pattern, delimiter, header, rows to skip, date format, encoding, Excel sheet, JSON record path, XML record tag and the column mapping. **Run preview** tests a format before saving. |
+| **Monitoring** | summary with totals; **activity log** (`App_Log`, filter by level / component); **errors** (`App_Error`, failing step + expandable stack trace); **data errors** and **alerts** (`Data_Error`, filter by file / alerts only / open only, each with a **Correct** link); **load history** (`Load_History`). JSON: `/api/logs`, `/api/errors`, `/api/data-errors`, `/api/history`, `/api/corrections`, `/api/monitor`, `/api/status`. |
+| **Data correction** | fix a row of the staging table: find it by stage id, ticker / trade date / market / source file – or click **Correct** on a data error, which opens the page with that row populated. Values are validated with the same business rules as a load; a row that is missing (e.g. a missing-market-day alert or a rejected line) can be added. Every change is tracked in `Data_Correction` (old / new value per column, note) and the related data errors are marked **resolved**. |
+| **Settings** (admin) | conversion / loading / other folders, SQLite file, staging table, formats file, loader options. Saved to `config.ini`. |
+| **Users** (admin) | add users with a role and an initial password (optionally to be changed at the first sign-in), edit name / role / active status, reset passwords, delete accounts. The last active administrator cannot be demoted, disabled or deleted. |
+
+The dashboard calls the same `FileConverter` / `StageLoader` classes as the
+CLI – everything it does can also be scripted or scheduled.
+
+![overview](docs/dashboard_overview.png)
+![monitoring](docs/dashboard_monitoring.png)
+![data correction](docs/dashboard_correction.png)
+![users](docs/dashboard_users.png)
+
+<details>
+<summary>More screenshots: preview, format editor, settings</summary>
+
+![preview](docs/dashboard_preview.png)
+![format editor](docs/dashboard_format_editor.png)
+![settings](docs/dashboard_settings.png)
+</details>
+
+---
+
+## 4. Loading (`load`)
+
+```
+python -m stock_dataload load                      # every *.txt in data/loading/
+python -m stock_dataload load path/to/file.txt     # specific file(s)
+    --market NYSE        Market value for all rows (default: from the file name)
+    --truncate           empty the staging table before loading
+    --skip-bad-rows      skip invalid rows (written to data/error/<file>.rejects.txt)
+    --keep               leave files where they are instead of moving them
+```
+
+The loader only accepts the **default format** – comma separated, one
+header row, dates as `YYYYMMDD`:
 
 ```
 <ticker>,<date>,<open>,<high>,<low>,<close>,<vol>
 AACG,20250123,0.9,0.9229,0.89,0.9128,2800
 ```
 
-* comma delimited, one header row (angle brackets optional, case-insensitive)
-* `date` as `YYYYMMDD`
-* defined in one place: `stock_dataload/formats.py` (`DEFAULT_COLUMNS`)
+Per file: sha-256 fingerprint → header check → row validation → **delete the
+file's previous rows + insert the new rows in one transaction** → data
+quality checks → move to `data/archive/` (success) or `data/error/`
+(failure, with a `.error.txt` report and a full rollback). Exit code is 1 if
+any file failed – handy for schedulers.
 
-The loader is strict: a file whose header is not exactly this sequence is
-moved to `data/error/` with the message *"run the converter first"*.
+**Re-loading a file.** If a file with the same name was loaded before, its
+rows are deleted from the staging table and the file is loaded again – in
+the same transaction, so a broken re-delivery rolls back and the previous
+copy stays. No matter how often a file is loaded, exactly **one copy** (the
+latest delivery) is in the staging table. Every attempt is recorded in
+`Load_History` (`loaded` / `replaced` / `failed`).
 
-## Loading (`load`)
+`Market` is derived from the file name (`NASDAQ_20250123.txt` → `NASDAQ`,
+regex in `config.ini`) unless `--market` is given.
 
-```
-python -m stock_dataload load                      # every *.txt / *.csv in data/loading/
-python -m stock_dataload load path/to/file.txt     # specific file(s)
-    --market NYSE        Market value for all rows (default: from file name, see config)
-    --truncate           empty the staging table before loading
-    --skip-bad-rows      skip invalid rows (written to data/error/<file>.rejects.txt)
-    --keep               leave files where they are instead of moving them
-```
+---
 
-Per file: header check → row validation → batched insert in **one
-transaction** → move to `archive/` (success) or `error/` (failure, with a
-`.error.txt` report and a full rollback).  Loading the same file name again
-replaces its previous rows (`replace_existing_file_rows = true`), so re-runs
-are idempotent.  Exit code is 1 if any file failed – handy for schedulers.
+## 5. Converting (`convert`, `convert-folder`, `inspect`, `formats`)
 
-## Converting (`convert`, `convert-folder`, `inspect`, `formats`)
+| Source | Extensions | Notes |
+|--------|------------|-------|
+| CSV / delimited text | `.csv .txt .tsv .dat .prn .psv` | delimiter auto-detected (`, ; \| tab`), optional header, title rows |
+| Excel | `.xlsx .xlsm` | sheet by name or number, title rows, numeric / date cells |
+| JSON | `.json .jsonl .ndjson` | list of objects, nested objects (`prices.open`), `record_path`, JSON lines |
+| XML | `.xml` | one element per record (`record_tag`), attributes and child elements |
+
+Whatever the source, the output is always a default-format `.txt` file in
+the loading folder.
 
 ```
 python -m stock_dataload convert SOURCE [SOURCE ...]
-    --format NAME         use a saved format (formats.json / dashboard)
-    --type excel          source type: auto (default) csv text excel json xml
-    --columns date,ticker,vol,close,open,high,low   source column sequence ('skip' ignores a column)
-    --map ticker=Symbol,date=#7,open=Open,...       map each target column to a field, #position or =constant
-    --delimiter ';'       csv/text delimiter (default: auto-detect)
-    --no-header           no header line (needs --columns or --map with #positions)
-    --skip-rows 1         title rows above the header
-    --date-format %d/%m/%Y   source date pattern (default: auto)
-    --sheet Prices  --record-path data  --record-tag quote     excel / json / xml options
-    --output-name X.txt   name of the converted file (default: <source stem>.txt)
-    --overwrite | --rename   if the converted file already exists
-    --move-source         move the source to data/converted/ afterwards
-    --no-move             keep the result in data/work/ instead of data/loading/
-    --skip-bad-rows       skip rows that cannot be converted
+    --format NAME            use a saved format (formats.json / dashboard)
+    --type excel             source type: auto (default) csv text excel json xml
+    --columns date,ticker,vol,close,open,high,low    source column sequence ('skip' ignores a column)
+    --map ticker=Symbol,date=#7,open=Open,...        map each target column to a field, #position or =constant
+    --delimiter ';'  --no-header  --skip-rows 1  --date-format %d/%m/%Y  --encoding cp1252
+    --sheet Prices  --record-path data  --record-tag quote
+    --output-name X.txt  --overwrite | --rename  --move-source  --no-move  --skip-bad-rows
 python -m stock_dataload convert-folder [--format NAME] [--on-conflict rename|overwrite|error] [--keep-source]
-python -m stock_dataload inspect SOURCE [same options]   dry run: detected type, mapping, first converted rows
-python -m stock_dataload formats                          list the saved formats
+python -m stock_dataload inspect SOURCE        dry run: detected type, mapping, first converted rows
+python -m stock_dataload formats               list the saved formats
 ```
 
-How the column mapping is chosen (the same rules apply in the dashboard):
+How columns are mapped (CLI and dashboard alike):
 
-1. an explicit **column map** (`--map` / "map each column") – source field
-   name, `#n` position or `=VALUE` constant (e.g. `ticker==YHOO` for Yahoo
-   files that carry no ticker column);
-2. else an explicit **column sequence** (`--columns` / "column sequence");
-3. else the header / JSON keys / XML tags are matched against the alias
+1. an explicit **column map** (`--map`) – source field name, `#n` position or
+   `=VALUE` constant (e.g. `ticker==YHOO` for files without a ticker column);
+2. else an explicit **column sequence** (`--columns`);
+3. else header names / JSON keys / XML tags are matched against the alias
    table in `formats.COLUMN_ALIASES` (`Symbol`→ticker, `Volume`→vol,
-   `Trade Date`→date, `prices.open`→open, ...).  Unknown columns such as
-   `Adj Close` or `Currency` are ignored; all seven default columns must be
-   found or the conversion fails with a hint.
+   `Trade Date`→date, …). Unknown columns are ignored; all seven default
+   columns must be found.
 
 Files in the conversion folder are matched against the **file pattern** of
-each saved format (`NASDAQ_*.xlsx` → `excel_prices`); otherwise auto-detection
-is used.  The output is written to `data/work/` and only *moved* into
-`data/loading/` once complete, so the loader never picks up a half-written
-file.  If a file with the same name already exists the folder workflow
-*renames* (`NASDAQ_20250123.txt` → `NASDAQ_20250123_json.txt`) rather than
-silently overwriting.
+each saved format (`NASDAQ_*.xlsx` → `excel_prices`). Output is written to
+`data/work/` and only moved into `data/loading/` when complete; name clashes
+are resolved by renaming (`NASDAQ_20250123_json.txt`).
 
-## Using it from Python
+The `samples/` folder holds `NASDAQ_20250123.txt` and the same data as csv,
+tsv, `;`-delimited, pipe/no-header, xlsx, json and xml – converting any of
+them yields a file byte-identical to the original (verified by the tests).
+
+---
+
+## 6. Monitoring: activity log, errors, data quality
+
+Everything the app does is tracked in the database (next to the rotating
+`logs/stock_dataload.log`) and shown on the dashboard's **Monitoring** pages:
+
+| Table | Content | CLI |
+|-------|---------|-----|
+| `App_Log` | every activity: `load_started`, `reload_detected`, `previous_load_replaced`, `file_loaded`, `data_errors_found`, `data_alert`, `run_complete`, … (level, component, file, load id, JSON details) | `logs [--level ALERT] [--component loader]` |
+| `App_Error` | every operational error with the **component and step** that failed (`check_file`, `previous_load_check`, `replace_rows`, `insert_rows`, `record_history`, `quality_check`, `archive_file`, conversion, CLI …), exception type and stack trace | `errors [--component loader]` |
+| `Data_Error` | data quality findings (see below) with rule, severity, `Alert` flag, ticker, date, column, value, line; `Resolved` once corrected | `data-errors [--file NAME] [--alerts]` |
+| `Data_Correction` | every change made on the **Data correction** page: action (updated / inserted), staging row, column, old / new value, linked data error, note | dashboard `/correct`, `/api/corrections` |
+| `Load_History` | one row per load attempt: file name, sha-256 content hash, status, rows, message | `history [--file NAME]` |
+
+All `logs` / `errors` / `data-errors` / `history` commands take `--limit N`.
+
+### Data quality checks (strategy pattern)
+
+After every successful load the rows are validated by pluggable business
+rules (`stock_dataload/quality.py`). Findings do not fail the load (a staging
+table lands data *as delivered*) but each one is recorded in `Data_Error`:
+
+| Rule | Checks | Severity |
+|------|--------|----------|
+| `date_is_valid` | `date` is a real `YYYYMMDD` calendar date | error |
+| `numeric_columns` | `open, high, low, close, vol` are numbers | error |
+| `high_above_low` | on each row `high` is not smaller than `low` | error |
+| `missing_market_day` | every stock known from previous loads of the market has **valid** data for each day the **market was open** (weekends, US holidays and `extra_holidays` are closed days) | **alert** |
+| `row_format` | rows rejected by the loader itself | error |
+
+Alerts are also written as `ALERT` entries to `App_Log` and as warnings to
+the log file. Add or remove rules without touching the loader:
+
+```python
+from stock_dataload import StageLoader, load_settings
+from stock_dataload.quality import DataQualityChecker, RowValidationStrategy, QualityIssue
+
+class VolumeCapStrategy(RowValidationStrategy):
+    name = "volume_cap"
+    def validate_row(self, row, context):
+        if float(row.values["vol"] or 0) > 1e10:
+            return [QualityIssue(self.name, "volume looks wrong", line_no=row.line_no)]
+        return []
+
+checker = DataQualityChecker()               # the default rule set
+checker.add_strategy(VolumeCapStrategy())    # add a rule
+checker.remove_strategy("high_above_low")    # drop a rule
+StageLoader(load_settings(), checker=checker).run()
+```
+
+Dataset-wide rules subclass `DatasetValidationStrategy` (see
+`MissingMarketDayStrategy`).
+
+---
+
+## 7. Configuration (`config.ini`)
+
+Edit in the dashboard (*Settings*) or by hand. Relative paths are resolved
+against the folder containing `config.ini`; the file is found via
+`--config`, `$STOCK_DATALOAD_CONFIG`, `./config.ini` or the project root.
+
+| Section / key | Meaning |
+|---------------|---------|
+| `[paths] conversion_dir`, `loading_dir` | the conversion folder and the loading folder |
+| `converted_dir`, `archive_dir`, `error_dir`, `work_dir`, `log_dir` | see project layout |
+| `[database] sqlite_path` | SQLite file (created on first use), default `data/stock_trade.db` |
+| `stage_table`, `batch_size`, `truncate_before_load` | staging table name, rows per insert batch, truncate-and-load |
+| `[quality] enabled` | run the data quality strategies after every load |
+| `alert_missing_days` | missing-market-day alerts on/off |
+| `extra_holidays` | ad-hoc market closures, comma separated `YYYY-MM-DD` |
+| `[loader] file_patterns` | which files in the loading folder are loaded (`*.txt`) |
+| `market_from_filename_regex`, `default_market` | how `Market` is derived from the file name |
+| `skip_bad_rows`, `encoding` | loader options |
+| `[formats] file` | JSON file holding the custom formats (`formats.json`) |
+| `[dashboard] host`, `port` | where the dashboard listens (`127.0.0.1:8050`) |
+| `secret_key_file` | where the generated session secret is kept (`data/.secret_key`, git-ignored); `$STOCK_DATALOAD_SECRET` overrides |
+
+---
+
+## 8. Database
+
+One SQLite file (`data/stock_trade.db`); all tables are created
+automatically (or by `init-db`). DDL for reference in `sql/`.
+
+| Table | Columns |
+|-------|---------|
+| `Stock_Stage` | `StageId`, `Market`, `Ticker`, `TradeDate`, `Open`, `High`, `Low`, `Close`, `Vol` (all as delivered, text), `SourceFile`, `LoadId`, `LoadedAt` |
+| `Load_History` | `FileName`, `FileHash`, `FileSize`, `LoadId`, `Market`, `Status`, `RowsLoaded`, `Message`, `LoadedAt` |
+| `App_Log` | `LoggedAt`, `Level`, `Component`, `Event`, `SourceFile`, `LoadId`, `Message`, `Details` |
+| `App_Error` | `OccurredAt`, `Component`, `Operation`, `SourceFile`, `LoadId`, `ErrorType`, `ErrorMessage`, `Stacktrace`, `Details` |
+| `Data_Error` | `DetectedAt`, `SourceFile`, `LoadId`, `Market`, `Ticker`, `TradeDate`, `ColumnName`, `Value`, `Rule`, `Severity`, `Alert`, `ErrorMessage`, `LineNo`, `Resolved`, `ResolvedAt`, `ResolutionNote` |
+| `Data_Correction` | `CorrectedAt`, `Action`, `StageId`, `SourceFile`, `Ticker`, `TradeDate`, `ColumnName`, `OldValue`, `NewValue`, `DataErrorId`, `Note` |
+| `App_User` | `Username`, `DisplayName`, `PasswordHash` (PBKDF2), `Role`, `Active`, `MustChangePassword`, `CreatedAt`, `CreatedBy`, `LastLoginAt` |
+
+Query with any SQLite tool, e.g. `sqlite3 data/stock_trade.db "select * from Stock_Stage limit 5"`.
+
+---
+
+## 9. Tests
+
+```bash
+python -m unittest discover -s tests -t . -v
+python -m coverage run --source=stock_dataload -m unittest discover -s tests -t .
+python -m coverage report -m                  # ~97% lines, every method covered
+```
+
+No external services are needed. `tests/test_dashboard_browser.py` drives
+the dashboard in a real headless Chromium via Playwright: run
+`python -m playwright install chromium` once (or point
+`PLAYWRIGHT_BROWSERS_PATH` at an existing Playwright browser cache); these
+tests are skipped automatically if no browser can be launched.
+
+---
+
+## 10. Project layout
+
+```
+Stock_DataLoadGit/
+├── config.ini                 settings (editable in the dashboard)
+├── formats.json               custom file formats (editable in the dashboard)
+├── requirements.txt
+├── stock_dataload/            the package
+│   ├── formats.py             default format + header alias table
+│   ├── file_formats.py        FileFormat model + FormatStore (formats.json)
+│   ├── readers.py             csv / text / excel / json / xml readers
+│   ├── converter.py           any source -> default-format text file -> loading folder
+│   ├── loader.py              loading folder -> staging table
+│   ├── db.py                  staging table + Load_History (SQLite)
+│   ├── audit.py               App_Log / App_Error
+│   ├── auth.py                users, roles, password hashing (App_User)
+│   ├── quality.py             data quality strategies + Data_Error
+│   ├── correction.py          data correction of staging rows + Data_Correction
+│   ├── market_calendar.py     US market trading calendar
+│   ├── config.py              config.ini handling
+│   ├── cli.py                 python -m stock_dataload ...
+│   └── dashboard/             Flask web dashboard
+├── data/
+│   ├── conversion/            THE CONVERSION FOLDER: source files in any supported format
+│   ├── converted/             sources after a successful conversion
+│   ├── loading/               THE LOADING FOLDER: default-format .txt files waiting to be loaded
+│   ├── archive/               files loaded successfully
+│   ├── error/                 files that failed + .error.txt / .rejects.txt reports
+│   └── work/                  scratch space for the converter
+├── samples/                   NASDAQ_20250123 as txt / csv / tsv / xlsx / json / xml
+├── sql/                       DDL scripts for reference
+├── tests/                     unittest suite
+└── logs/                      stock_dataload.log (rotating)
+```
+
+---
+
+## 11. Scripting and scheduling
 
 ```python
 from stock_dataload import load_settings, FileConverter, ConversionSpec, StageLoader
 
 settings = load_settings()                     # finds config.ini
-FileConverter(settings).convert("inbox/NASDAQ_20250123_reordered.txt")
 FileConverter(settings).convert("inbox/broker.csv", ConversionSpec(date_format="%Y-%m-%d"))
 for result in StageLoader(settings).run():
-    print(result)                              # NASDAQ_20250123_reordered.txt: loaded (4092 rows, ...)
+    print(result)                              # broker.txt: loaded (4092 rows, ...)
 ```
-
-## Configuration (`config.ini`)
-
-Edit in the dashboard (*Settings*) or by hand.
-
-| Section / key                       | Meaning                                                          |
-|-------------------------------------|------------------------------------------------------------------|
-| `[paths] conversion_dir`            | the conversion folder (default `data/conversion`)                |
-| `loading_dir`                       | the loading folder (default `data/loading`)                      |
-| `converted_dir`, `archive_dir`, `error_dir`, `work_dir`, `log_dir` | see folder layout                 |
-| `[database] sqlite_path`            | SQLite database file (created on first use)                      |
-| `stage_table`                       | target table (`Stock_Stage`)                                     |
-| `batch_size`                        | rows per `executemany`                                           |
-| `truncate_before_load`              | truncate-and-load style staging                                  |
-| `replace_existing_file_rows`        | delete rows of a previously loaded file with the same name first |
-| `[loader] file_patterns`            | which files in the loading folder are loaded (`*.txt`)           |
-| `market_from_filename_regex`        | how `Market` is derived from the file name                       |
-| `default_market`, `skip_bad_rows`, `encoding` |                                                        |
-| `[formats] file`                    | JSON file holding the custom formats (default `formats.json`)    |
-| `[dashboard] host`, `port`          | where the dashboard listens (default `127.0.0.1:8050`)           |
-
-Relative paths are resolved against the folder that contains `config.ini`.
-The file is located via `--config`, `$STOCK_DATALOAD_CONFIG`, `./config.ini`
-or the project root, in that order.
-
-## Staging table
-
-`Stock_Stage` in the SQLite file `data/stock_trade.db` (DDL: `sql/create_stock_stage_sqlite.sql`):
-
-| Column     | Type    | Content                                  |
-|------------|---------|------------------------------------------|
-| StageId    | INTEGER PRIMARY KEY AUTOINCREMENT |                |
-| Market     | TEXT    | from file name / `--market`              |
-| Ticker     | TEXT    | `<ticker>`                               |
-| TradeDate  | TEXT    | `<date>` (YYYYMMDD, as delivered)        |
-| Open/High/Low/Close | TEXT | as delivered                       |
-| Vol        | TEXT    | `<vol>`                                  |
-| SourceFile | TEXT    | file name                                |
-| LoadId     | TEXT    | one id per file load                     |
-| LoadedAt   | TEXT    | ISO timestamp                            |
-
-Query it with any SQLite tool, e.g. `sqlite3 data/stock_trade.db "select * from Stock_Stage limit 5"`.
-
-## Tests
-
-```bash
-python -m unittest discover -s tests -t . -v      # no external services needed
-```
-
-`tests/test_requirements.py` maps tests to requirements (R1 column mapping,
-R2 conversion → same loading folder, R3 conversion/loading independent,
-R4 every file type → default text file, R5 dashboard configuration);
-`tests/test_readers.py` round-trips every sample file type,
-`tests/test_dashboard.py` drives the web UI with Flask's test client and
-`tests/test_dashboard_browser.py` clicks through it in a real headless
-Chromium via Playwright (`pip install playwright && playwright install chromium`;
-skipped automatically when no browser is available).
-
-## Scheduling
 
 `python -m stock_dataload load` returns 0 on success, 1 if any file failed,
-2 on a configuration error – run it from cron / Windows Task Scheduler after
-the files have been dropped (or converted) into `data/loading/`.
+2 on a configuration error – run it from Windows Task Scheduler / cron
+(using the venv's Python, e.g. `C:\...\Stock_DataLoadGit\.venv\Scripts\python.exe -m stock_dataload load`)
+after the files have been dropped or converted into `data/loading/`.

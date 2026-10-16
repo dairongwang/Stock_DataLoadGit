@@ -5,15 +5,26 @@
 <title>{% block title %}Stock Data Load{% endblock %} - dashboard</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body class="role-{{ current_user.role if current_user else 'anonymous' }}">
 <header>
   <span class="brand">Stock Data Load</span>
+  {% if current_user %}
   <nav>
     <a href="{{ url_for('index') }}" class="{{ 'active' if request.endpoint == 'index' }}">Overview</a>
     <a href="{{ url_for('formats_page') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('format') }}">File formats</a>
-    <a href="{{ url_for('settings_page') }}" class="{{ 'active' if request.endpoint == 'settings_page' }}">Settings</a>
+    <a href="{{ url_for('monitor') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('monitor') }}">Monitoring</a>
+    {% if can('operator') %}<a href="{{ url_for('correct') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('correct') }}">Data correction</a>{% endif %}
+    {% if can('admin') %}<a href="{{ url_for('settings_page') }}" class="{{ 'active' if request.endpoint == 'settings_page' }}">Settings</a>
+    <a href="{{ url_for('users') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('user') }}">Users</a>{% endif %}
   </nav>
-  <span class="muted mono" style="margin-left:auto;color:#9ca3af">{{ settings.config_file or 'built-in defaults' }}</span>
+  <span class="userbox">
+    <a href="{{ url_for('account') }}" title="change your password">{{ current_user.display_name or current_user.username }}</a>
+    <span class="badge">{{ current_user.role }}</span>
+    <form method="post" action="{{ url_for('logout') }}" class="inline"><button class="small secondary" type="submit">Sign out</button></form>
+  </span>
+  {% else %}
+  <span class="muted" style="margin-left:auto;color:#9ca3af">sign in required</span>
+  {% endif %}
 </header>
 <main>
   {% with messages = get_flashed_messages(with_categories=true) %}

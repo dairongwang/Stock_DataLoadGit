@@ -311,6 +311,10 @@ class FileConverter:
                          (NASDAQ_20250123.txt -> NASDAQ_20250123_json.txt)
         overwrite        shorthand for on_conflict="overwrite"
         move_source      move the source file to converted_dir afterwards
+
+        Note: by design conversion never touches the database (requirement
+        R3); activities go to the rotating log file, and conversion errors
+        are recorded in App_Error by the caller (CLI / dashboard).
         """
         source = Path(source)
         if not source.is_file():

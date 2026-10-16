@@ -107,25 +107,68 @@ class LoaderTests(TempProjectTestCase):
         self.assertIn("empty", results[0].message)
         self.assertIn("no data rows", results[1].message)
 
-    def test_reload_replaces_rows_of_same_file(self):
+    def test_reload_of_same_file_deletes_previous_rows_and_loads_again(self):
+        """Loading the same file again replaces its rows - only ONE copy in the database."""
         self.stage()
         first = self.loader.run()[0]
         self.stage()
         second = self.loader.run()[0]
-        self.assertTrue(second.ok)
+        self.assertTrue(second.ok, second.message)
         self.assertEqual(second.rows_replaced, 4092)
-        self.assertEqual(self.db.count_rows(), 4092)
+        self.assertEqual(second.rows_loaded, 4092)
+        self.assertEqual(second.replaced_load_id, first.load_id)
+        self.assertIn("re-load", str(second))
+        self.assertEqual(self.db.count_rows(), 4092)                    # still one copy
         self.assertEqual(self.db.count_rows(source_file="NASDAQ_20250123.txt"), 4092)
         self.assertNotEqual(first.load_id, second.load_id)
-        # archive keeps both copies (second gets a timestamp suffix)
+        # the rows in the table now belong to the NEW load
+        self.assertEqual({row[9] for row in self.rows()}, {second.load_id})
+        # archive keeps both physical copies (second gets a timestamp suffix)
         self.assertEqual(len(list(self.settings.archive_dir.iterdir())), 2)
+        # ... and the registry tells the story
+        history = self.db.load_history(file_name="NASDAQ_20250123.txt")
+        self.assertEqual([h.status for h in history], ["loaded", "replaced"])
 
-    def test_reload_appends_when_replace_disabled(self):
-        self.settings.replace_existing_file_rows = False
+    def test_reload_many_times_still_one_copy(self):
         self.stage()
         self.loader.run()
+        for _ in range(3):
+            self.stage()
+            r = self.loader.run()[0]
+            self.assertTrue(r.ok, r.message)
+            self.assertEqual(r.rows_replaced, 4092)
+            self.assertEqual(self.db.count_rows(), 4092)
+
+    def test_reload_with_changed_content_replaces_rows(self):
+        """Same file name but corrected content: the old rows are replaced - one copy."""
         self.stage()
         self.loader.run()
+        self.write("loading/NASDAQ_20250123.txt", DEFAULT_HEADER + "AAA,20250123,1,2,0.5,1.5,100\n")
+        second = self.loader.run()[0]
+        self.assertTrue(second.ok, second.message)
+        self.assertEqual(second.rows_replaced, 4092)
+        self.assertEqual(self.db.count_rows(), 1)
+        self.assertEqual(self.db.count_rows(source_file="NASDAQ_20250123.txt"), 1)
+
+    def test_failed_reload_keeps_the_previous_copy(self):
+        """If the re-delivery is broken the delete is rolled back with the insert."""
+        self.stage()
+        first = self.loader.run()[0]
+        self.write("loading/NASDAQ_20250123.txt", DEFAULT_HEADER + "AAA,2025-01-23,1,2,0.5,1.5,100\n")
+        second = self.loader.run()[0]
+        self.assertEqual(second.status, "failed")
+        self.assertEqual(self.db.count_rows(source_file="NASDAQ_20250123.txt"), 4092)
+        self.assertEqual({row[9] for row in self.rows()}, {first.load_id})
+        # the previous load is still the valid one in the registry
+        self.assertEqual(self.db.find_previous_load("NASDAQ_20250123.txt").load_id, first.load_id)
+
+    def test_same_content_under_a_different_name_loads_separately(self):
+        self.stage()
+        self.loader.run()
+        self.stage(name="NASDAQ_20250123_copy.txt")
+        r = self.loader.run()[0]
+        self.assertTrue(r.ok, r.message)
+        self.assertEqual(r.rows_replaced, 0)
         self.assertEqual(self.db.count_rows(), 2 * 4092)
 
     def test_truncate_before_load(self):

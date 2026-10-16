@@ -1,0 +1,10 @@
+{# sub navigation + totals shared by all monitoring pages #}
+<div class="monitor-nav">
+  <a href="{{ url_for('monitor') }}" class="{{ 'active' if request.endpoint == 'monitor' }}">Summary</a>
+  <a href="{{ url_for('monitor_logs') }}" class="{{ 'active' if request.endpoint == 'monitor_logs' }}">Activity log <span class="badge">{{ counts.logs }}</span></a>
+  <a href="{{ url_for('monitor_errors') }}" class="{{ 'active' if request.endpoint == 'monitor_errors' }}">Errors <span class="badge {{ 'err' if counts.errors }}">{{ counts.errors }}</span></a>
+  <a href="{{ url_for('monitor_data_errors') }}" class="{{ 'active' if request.endpoint == 'monitor_data_errors' }}">Data errors <span class="badge {{ 'warn' if counts.data_errors }}">{{ counts.data_errors }}</span></a>
+  <a href="{{ url_for('monitor_data_errors', alerts=1) }}" class="{{ 'active' if request.endpoint == 'monitor_data_errors' and request.args.get('alerts') == '1' }}">Alerts <span class="badge {{ 'err' if counts.alerts }}">{{ counts.alerts }}</span></a>
+  {% if can('operator') %}<a href="{{ url_for('correct') }}">Data correction <span class="badge">{{ counts.corrections }}</span></a>{% endif %}
+  <a href="{{ url_for('monitor_history') }}" class="{{ 'active' if request.endpoint == 'monitor_history' }}">Load history <span class="badge">{{ counts.loads }}</span></a>
+</div>

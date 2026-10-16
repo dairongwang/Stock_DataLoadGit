@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<div class="card login-card">
+  <h1>Sign in</h1>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('login') }}">
+    <input type="hidden" name="next" value="{{ next or '' }}">
+    <div class="form-grid" style="grid-template-columns:120px 1fr">
+      <label for="username">User name</label><input type="text" id="username" name="username" value="{{ username or '' }}" autofocus required autocomplete="username">
+      <label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="current-password">
+    </div>
+    <div class="actions"><button type="submit">Sign in</button></div>
+  </form>
+  <p class="muted" style="font-size:12px">No account yet? The initial administrator was created when the dashboard first started
+  (the one-time password was printed to the console); administrators add further users on the <b>Users</b> page.</p>
+</div>
+{% endblock %}

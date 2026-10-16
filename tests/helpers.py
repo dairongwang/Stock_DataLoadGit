@@ -29,6 +29,7 @@ def make_settings(root: Path) -> Settings:
     s.work_dir = root / "work"
     s.log_dir = root / "logs"
     s.sqlite_path = root / "test.db"
+    s.secret_key_file = root / ".secret_key"
     s.batch_size = 1000
     s.formats_file = root / "formats.json"
     shipped = PROJECT_ROOT / "formats.json"

@@ -1,5 +1,13 @@
 # Core (convert csv/text/json/xml + load into SQLite): Python 3.10+ standard library only.
+# Install into the project's virtual environment:
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 # Needed for the web dashboard:
 flask>=2.3
 # Needed to read Excel (.xlsx) source files:
 openpyxl>=3.1
+# Needed for the test-coverage report (python -m coverage ...):
+coverage>=7.0
+# Needed for the real-browser dashboard tests (tests/test_dashboard_browser.py);
+# the Chromium build itself comes from `python -m playwright install chromium`
+# or an existing cache via PLAYWRIGHT_BROWSERS_PATH:
+playwright>=1.56

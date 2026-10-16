@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Monitoring{% endblock %}
+{% block content %}
+<h1>Monitoring</h1>
+<p class="muted">Everything the app does is tracked in the database: activities in <code>App_Log</code>,
+operational errors in <code>App_Error</code>, data quality findings in <code>Data_Error</code>
+and every load attempt in <code>Load_History</code>.</p>
+{% include "_monitor_nav.html" %}
+
+<div class="stats">
+  <a class="card stat-card" href="{{ url_for('monitor_history') }}"><div class="stat">{{ counts.loads }}</div><div class="muted">load attempts</div>
+    {% if counts.failed_loads %}<div class="err" style="font-size:12px">{{ counts.failed_loads }} failed</div>{% endif %}</a>
+  <a class="card stat-card" href="{{ url_for('monitor_logs') }}"><div class="stat">{{ counts.logs }}</div><div class="muted">activity log entries</div></a>
+  <a class="card stat-card {{ 'bad' if counts.errors }}" href="{{ url_for('monitor_errors') }}"><div class="stat">{{ counts.errors }}</div><div class="muted">operational errors</div></a>
+  <a class="card stat-card {{ 'warnish' if counts.data_errors }}" href="{{ url_for('monitor_data_errors') }}"><div class="stat">{{ counts.data_errors }}</div><div class="muted">open data errors</div>{% if counts.resolved %}<div class="ok" style="font-size:12px">{{ counts.resolved }} resolved</div>{% endif %}</a>
+  <a class="card stat-card {{ 'bad' if counts.alerts }}" href="{{ url_for('monitor_data_errors', alerts=1) }}"><div class="stat">{{ counts.alerts }}</div><div class="muted">open alerts (missing market day)</div></a>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Latest operational errors <a class="btn small secondary" style="float:right" href="{{ url_for('monitor_errors') }}">all</a></h2>
+    {% if recent_errors %}
+    <table>
+      <tr><th>When</th><th>Step</th><th class="wrap">Error</th><th>File</th></tr>
+      {% for e in recent_errors %}
+      <tr>
+        <td class="muted">{{ e.occurred_at }}</td>
+        <td class="mono">{{ e.component }}/{{ e.operation }}</td>
+        <td class="wrap err">{% if e.error_type %}<span class="badge err">{{ e.error_type }}</span> {% endif %}{{ e.error_message }}</td>
+        <td class="mono">{{ e.source_file or '' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted ok">No operational errors recorded.</p>{% endif %}
+  </div>
+  <div class="card">
+    <h2>Latest alerts <a class="btn small secondary" style="float:right" href="{{ url_for('monitor_data_errors', alerts=1) }}">all</a></h2>
+    {% if recent_alerts %}
+    <table>
+      <tr><th>When</th><th>Ticker</th><th>Date</th><th class="wrap">Finding</th><th>File</th></tr>
+      {% for d in recent_alerts %}
+      <tr>
+        <td class="muted">{{ d.detected_at }}</td>
+        <td class="mono"><b>{{ d.ticker or '' }}</b></td>
+        <td class="mono">{{ d.trade_date or '' }}</td>
+        <td class="wrap"><span class="badge err">ALERT</span> {{ d.error_message }}</td>
+        <td class="mono">{{ d.source_file or '' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted ok">No alerts.</p>{% endif %}
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Latest load attempts <a class="btn small secondary" style="float:right" href="{{ url_for('monitor_history') }}">all</a></h2>
+    {% if recent_loads %}
+    <table>
+      <tr><th>When</th><th>File</th><th>Status</th><th class="num">Rows</th></tr>
+      {% for h in recent_loads %}
+      <tr>
+        <td class="muted">{{ h.loaded_at }}</td>
+        <td class="mono">{{ h.file_name }}</td>
+        <td><span class="badge {{ 'ok' if h.status == 'loaded' else 'err' if h.status == 'failed' else '' }}">{{ h.status }}</span></td>
+        <td class="num">{{ '{:,}'.format(h.rows_loaded) }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">Nothing loaded yet.</p>{% endif %}
+  </div>
+  <div class="card">
+    <h2>Latest activity <a class="btn small secondary" style="float:right" href="{{ url_for('monitor_logs') }}">all</a></h2>
+    {% if recent_logs %}
+    <table>
+      <tr><th>When</th><th>Level</th><th>Event</th><th class="wrap">Message</th></tr>
+      {% for l in recent_logs %}
+      <tr>
+        <td class="muted">{{ l.logged_at }}</td>
+        <td><span class="badge {{ 'err' if l.level in ('ERROR', 'ALERT') else 'warn' if l.level == 'WARNING' else '' }}">{{ l.level }}</span></td>
+        <td class="mono">{{ l.event }}</td>
+        <td class="wrap">{{ l.message or '' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">No activity yet.</p>{% endif %}
+  </div>
+</div>
+{% endblock %}

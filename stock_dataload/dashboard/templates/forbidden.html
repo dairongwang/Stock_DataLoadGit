@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Not allowed{% endblock %}
+{% block content %}
+<div class="card" style="max-width:640px">
+  <h1>Not allowed</h1>
+  <p>This action needs the <b>{{ needed }}</b> role; you are signed in as <b>{{ current_user.username }}</b> with the
+  <b>{{ current_user.role }}</b> role. Ask an administrator if you need more rights.</p>
+  <p><a class="btn secondary" href="{{ url_for('index') }}">Back to the overview</a></p>
+</div>
+{% endblock %}
