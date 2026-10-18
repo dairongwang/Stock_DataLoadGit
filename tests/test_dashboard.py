@@ -22,7 +22,7 @@ from stock_dataload.dashboard import create_app
 from stock_dataload.db import StageDatabase
 from stock_dataload.file_formats import FormatStore
 
-from .helpers import DEFAULT_HEADER, ORIGINAL, SAMPLES, TempProjectTestCase
+from .helpers import DEFAULT_HEADER, ORIGINAL, SAMPLES, TempProjectTestCase, register_listed
 
 ORIGINAL_TEXT = ORIGINAL.read_text(encoding="utf-8")
 
@@ -161,14 +161,14 @@ class ConvertAndLoadThroughDashboardTests(DashboardTestCase):
         self.assertTrue((self.state.settings.error_dir / "NASDAQ_20250123_reordered.txt").exists())
 
     def test_load_single_file_with_market_and_truncate(self):
-        self.write("loading/A_20250101.txt", DEFAULT_HEADER + "AAA,20250101,1,2,0.5,1.5,100\n")
-        self.write("loading/B_20250101.txt", DEFAULT_HEADER + "BBB,20250101,1,2,0.5,1.5,100\n")
-        self.client.post("/load", data={"file": "A_20250101.txt", "market": "TEST"})
+        self.write("loading/A_20250107.txt", DEFAULT_HEADER + "AAA,20250107,1,2,0.5,1.5,100\n")
+        self.write("loading/B_20250107.txt", DEFAULT_HEADER + "BBB,20250107,1,2,0.5,1.5,100\n")
+        self.client.post("/load", data={"file": "A_20250107.txt", "market": "TEST"})
         db = StageDatabase(self.state.settings)
         with db.connection() as conn:
             rows = db.fetch_all(conn)
         self.assertEqual([(r[0], r[1]) for r in rows], [("TEST", "AAA")])
-        self.client.post("/load", data={"file": "B_20250101.txt", "truncate": "on"})
+        self.client.post("/load", data={"file": "B_20250107.txt", "truncate": "on"})
         with db.connection() as conn:
             rows = db.fetch_all(conn)
         self.assertEqual([r[1] for r in rows], ["BBB"])
@@ -207,6 +207,7 @@ class ConvertAndLoadThroughDashboardTests(DashboardTestCase):
         r = self.client.get("/files/conversion_dir/NASDAQ_20250123.csv")
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.get_data(as_text=True).startswith("Symbol,Open"))
+        r.close()      # the test client keeps the downloaded file open until the response is closed (Windows!)
         r = self.client.post("/files/conversion_dir/NASDAQ_20250123.csv/delete")
         self.assertEqual(r.status_code, 302)
         self.assertFalse((self.state.settings.conversion_dir / "NASDAQ_20250123.csv").exists())
@@ -396,13 +397,13 @@ class MonitoringPagesTests(DashboardTestCase):
         self.assertNotIn("load_started", html)         # limited to the 2 newest entries
 
     def test_error_page_shows_failed_step_and_stacktrace(self):
-        self.load_file("BAD_20250101.txt", "a,b\n1,2\n")
+        self.load_file("BAD_20250107.txt", "a,b\n1,2\n")
         html = self.client.get("/monitor/errors").get_data(as_text=True)
         self.assertIn("loader/insert_rows", html)
         self.assertIn("FileFormatError", html)
         self.assertIn("not the default column sequence", html)
         self.assertIn("stack trace", html)
-        self.assertIn("BAD_20250101.txt", html)
+        self.assertIn("BAD_20250107.txt", html)
         html = self.client.get("/monitor/errors?component=converter").get_data(as_text=True)
         self.assertIn("No operational errors recorded", html)
         # the summary page and overview strip reflect it too
@@ -410,6 +411,7 @@ class MonitoringPagesTests(DashboardTestCase):
         self.assertIn("1 error(s)", self.client.get("/").get_data(as_text=True))
 
     def test_data_error_page_with_alerts(self):
+        register_listed(self.state.settings, "NYSE", ["AAA", "BBB"])
         self.load_file("NYSE_20250109.txt", DEFAULT_HEADER + "AAA,20250109,1,2,0.5,1.5,100\n"
                                                             "BBB,20250109,1,2,0.5,1.5,100\n")
         self.load_file("NYSE_20250110.txt", DEFAULT_HEADER + "AAA,20250110,1,0.4,0.5,1.5,100\n")
@@ -436,7 +438,7 @@ class MonitoringPagesTests(DashboardTestCase):
         self.assertIn("No load attempts match", html)
 
     def test_json_api_endpoints(self):
-        self.load_file("BAD_20250101.txt", "a,b\n1,2\n")
+        self.load_file("BAD_20250107.txt", "a,b\n1,2\n")
         self.load_file("NYSE_20250110.txt", DEFAULT_HEADER + "AAA,20250110,1,0.4,0.5,1.5,100\n")
         logs = self.client.get("/api/logs?component=loader").get_json()
         self.assertEqual(logs["kind"], "logs")
@@ -583,6 +585,7 @@ class DataCorrectionPageTests(DashboardTestCase):
         self.assertIn("staging row not found", self.flashes(r))
 
     def test_add_missing_row_from_alert(self):
+        register_listed(self.state.settings, "NYSE", ["AAA", "BBB"])
         self.load_file("NYSE_20250109.txt", DEFAULT_HEADER + "AAA,20250109,1,2,0.5,1.5,100\n"
                                                             "BBB,20250109,1,2,0.5,1.5,100\n")
         self.load_file("NYSE_20250110.txt", DEFAULT_HEADER + "AAA,20250110,1,2,0.5,1.5,100\n")
@@ -665,7 +668,9 @@ class AuthenticationTests(DashboardTestCase):
         self.assertEqual(self.client.post("/load", data={}).status_code, 302)
         self.assertEqual(self.client.get("/api/status").status_code, 401)
         self.assertEqual(self.client.get("/api/logs").get_json()["error"], "authentication required")
-        self.assertEqual(self.client.get("/static/style.css").status_code, 200)
+        css = self.client.get("/static/style.css")
+        self.assertEqual(css.status_code, 200)
+        css.close()
         self.assertEqual(self.client.get("/login").status_code, 200)
 
     def test_login_logout_and_audit(self):

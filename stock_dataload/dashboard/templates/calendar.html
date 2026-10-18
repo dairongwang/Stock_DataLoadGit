@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Trading calendar{% endblock %}
+{% block content %}
+<h1>Trading calendar <span class="muted" style="font-size:13px;font-weight:400">No_Trading_Day - weekends, holidays and closures per market</span></h1>
+<p class="muted">A delivery dated on a day its market was closed (<code>NASDAQ_20230102.txt</code> on New Year's Day) is
+<b>skipped</b> with a warning and moved to the skipped folder; the missing-market-day check and the promotion's
+<code>market_closed</code> rule use the same table. Generate each year's days <b>before the year begins</b>
+(<code>python -m stock_dataload no-trading-days update</code> or the button below); days added by hand are never overwritten.</p>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Markets</h2>
+    {% if markets %}
+    <table>
+      <tr><th>Market</th><th>Name</th><th>Rules</th><th>Years generated</th><th>Active</th>{% if can('admin') %}<th></th>{% endif %}</tr>
+      {% for m in markets %}
+      <tr>
+        <td class="mono"><a href="{{ url_for('calendar_page', market=m.market, year=year) }}"><b>{{ m.market }}</b></a></td>
+        <td>{{ m.name or '' }}</td>
+        <td><span class="badge type" title="{{ rule_sets[m.rules] }}">{{ m.rules }}</span></td>
+        <td class="muted">{% set ys = market_years[m.market] %}{% if ys %}{{ ys[0] }}{% if ys|length > 1 %} - {{ ys[-1] }}{% endif %}{% else %}none{% endif %}</td>
+        <td>{% if m.is_active %}<span class="badge ok">active</span>{% else %}<span class="badge">inactive</span>{% endif %}</td>
+        {% if can('admin') %}<td><form method="post" action="{{ url_for('calendar_market_toggle', market=m.market) }}" class="inline"><button class="small secondary">{{ 'deactivate' if m.is_active else 'activate' }}</button></form></td>{% endif %}
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">No markets.</p>{% endif %}
+    {% if can('admin') %}
+    <form method="post" action="{{ url_for('calendar_market_add') }}" class="toolbar" style="margin-top:12px">
+      <input type="text" name="market" placeholder="code, e.g. LSE" style="width:120px" required>
+      <input type="text" name="name" placeholder="name (optional)" style="width:200px">
+      <select name="rules">{% for code, text in rule_sets.items() %}<option value="{{ code }}">{{ code }} - {{ text }}</option>{% endfor %}</select>
+      <button type="submit" class="small">Add market</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h2>Yearly update</h2>
+    <p class="muted">Generates the weekends and holidays of a year for the active markets (rule set <code>us</code>: the
+      NYSE / NASDAQ holidays incl. observance rules; <code>weekends</code>: Saturdays and Sundays only). Run it before
+      the year begins; running it again only adds missing days.</p>
+    {% if can('operator') %}
+    <form method="post" action="{{ url_for('calendar_update') }}" class="toolbar">
+      <label>Year <input type="number" name="year" value="{{ suggested_years[-1] }}" min="1900" max="2200" style="width:90px"></label>
+      <label>Markets
+        <select name="markets"><option value="">all active</option>{% for m in markets %}<option value="{{ m.market }}" {% if m.market == market and not m.is_active %}selected{% endif %}>{{ m.market }}</option>{% endfor %}</select></label>
+      <button type="submit" class="small">Generate</button>
+    </form>
+    {% endif %}
+    <p class="muted" style="margin-bottom:0">Suggested now: {{ suggested_years|join(' and ') }}. Ad-hoc closures (a day of mourning, a weather closure)
+      are added below or via <code>[quality] extra_holidays</code> in config.ini.</p>
+  </div>
+</div>
+
+<div class="card">
+  <form method="get" class="toolbar">
+    <h2 style="margin:0">No-trading days</h2>
+    <label style="margin-left:auto">Market
+      <select name="market">{% for m in markets %}<option value="{{ m.market }}" {% if m.market == market %}selected{% endif %}>{{ m.market }}</option>{% endfor %}</select></label>
+    <label>Year <input type="number" name="year" value="{{ year }}" min="1900" max="2200" style="width:90px"></label>
+    <label><input type="checkbox" name="all" value="1" {% if show_all %}checked{% endif %}> show weekends</label>
+    <button type="submit" class="small">Show</button>
+    <a class="btn small secondary" href="{{ url_for('api_no_trading_days', market=market, year=year, all=1 if show_all else None) }}">JSON</a>
+  </form>
+  {% if market %}
+  <p class="muted">{{ market }} {{ year }}: {{ days|length }} {{ 'no-trading day(s)' if show_all else 'holiday(s) / closure(s) (weekends hidden)' }}
+    {% if years %}&middot; generated years: {{ years[0] }}{% if years|length > 1 %} - {{ years[-1] }}{% endif %}{% else %}&middot; <span class="warn">nothing generated for this market yet</span>{% endif %}</p>
+  {% endif %}
+  {% if days %}
+  <table>
+    <tr><th>Date</th><th>Weekday</th><th class="wrap">Reason</th><th>Source</th>{% if can('operator') %}<th></th>{% endif %}</tr>
+    {% for d in days %}
+    <tr>
+      <td class="mono">{{ d.trade_date }}</td>
+      <td>{{ d.weekday }}</td>
+      <td class="wrap">{{ d.reason }}</td>
+      <td><span class="badge {{ 'warn' if d.source == 'manual' }}">{{ d.source }}</span></td>
+      {% if can('operator') %}<td><form method="post" action="{{ url_for('calendar_day_remove') }}" class="inline" onsubmit="return confirm('{{ d.market }} trades on {{ d.trade_date }}?')">
+        <input type="hidden" name="market" value="{{ d.market }}"><input type="hidden" name="date" value="{{ d.trade_date }}"><input type="hidden" name="all" value="{{ 1 if show_all else 0 }}">
+        <button class="small danger">remove</button></form></td>{% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  {% elif market %}
+  <p class="muted">No days recorded{% if not years %} - generate {{ year }} with the yearly update{% endif %}.</p>
+  {% endif %}
+  {% if can('operator') and market %}
+  <form method="post" action="{{ url_for('calendar_day_add') }}" class="toolbar" style="margin-top:12px">
+    <input type="hidden" name="market" value="{{ market }}">
+    <label>Add closure <input type="text" name="date" placeholder="YYYY-MM-DD" style="width:120px" required></label>
+    <input type="text" name="reason" placeholder="reason, e.g. National Day of Mourning" style="width:300px">
+    <button type="submit" class="small">Add</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

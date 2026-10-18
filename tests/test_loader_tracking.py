@@ -9,7 +9,7 @@ from stock_dataload.db import StageDatabase, file_sha256
 from stock_dataload.loader import StageLoader
 from stock_dataload.quality import DataErrorRepository, DataQualityChecker
 
-from .helpers import DEFAULT_HEADER, ORIGINAL, TempProjectTestCase
+from .helpers import DEFAULT_HEADER, ORIGINAL, TempProjectTestCase, register_listed
 
 
 class TrackingTestCase(TempProjectTestCase):
@@ -54,7 +54,7 @@ class HashAndHistoryTests(TrackingTestCase):
         self.assertTrue(h.loaded_at)
 
     def test_history_records_failed_load(self):
-        self.write("loading/BAD_20250101.txt", "wrong,header\n1,2\n")
+        self.write("loading/BAD_20250107.txt", "wrong,header\n1,2\n")
         self.loader.run()
         h = self.db.load_history()[0]
         self.assertEqual(h.status, "failed")
@@ -103,13 +103,13 @@ class HashAndHistoryTests(TrackingTestCase):
         self.assertEqual([h.status for h in self.db.load_history()], ["loaded", "replaced"])
 
     def test_load_history_limit_and_filter(self):
-        self.write("loading/A_20250101.txt", DEFAULT_HEADER + "AAA,20250101,1,2,0.5,1.5,100\n")
-        self.write("loading/B_20250101.txt", DEFAULT_HEADER + "BBB,20250101,1,2,0.5,1.5,100\n")
+        self.write("loading/A_20250107.txt", DEFAULT_HEADER + "AAA,20250107,1,2,0.5,1.5,100\n")
+        self.write("loading/B_20250107.txt", DEFAULT_HEADER + "BBB,20250107,1,2,0.5,1.5,100\n")
         self.loader.run()
         self.assertEqual(len(self.db.load_history()), 2)
         self.assertEqual(len(self.db.load_history(limit=1)), 1)
-        only_a = self.db.load_history(file_name="A_20250101.txt")
-        self.assertEqual([h.file_name for h in only_a], ["A_20250101.txt"])
+        only_a = self.db.load_history(file_name="A_20250107.txt")
+        self.assertEqual([h.file_name for h in only_a], ["A_20250107.txt"])
 
 
 class DistinctTickersTests(TrackingTestCase):
@@ -161,7 +161,7 @@ class AppLogTrackingTests(TrackingTestCase):
         self.assertIn("changed content", detected.message)
 
     def test_failed_load_is_tracked_in_app_error_with_step(self):
-        self.write("loading/BAD_20250101.txt", "wrong,header\n1,2\n")
+        self.write("loading/BAD_20250107.txt", "wrong,header\n1,2\n")
         self.loader.run()
         self.assertIn("load_failed", self.events("loader"))
         errors = self.audit.fetch_errors()
@@ -170,7 +170,7 @@ class AppLogTrackingTests(TrackingTestCase):
         self.assertEqual(e.component, "loader")
         self.assertEqual(e.operation, "insert_rows")          # the step that failed
         self.assertEqual(e.error_type, "FileFormatError")
-        self.assertEqual(e.source_file, "BAD_20250101.txt")
+        self.assertEqual(e.source_file, "BAD_20250107.txt")
         self.assertIn("not the default column sequence", e.error_message)
 
     def test_missing_file_fails_in_check_file_step(self):
@@ -212,6 +212,7 @@ class QualityIntegrationTests(TrackingTestCase):
         self.assertEqual([x.rule for x in self.repo.fetch()], ["date_is_valid"])
 
     def test_missing_market_day_alert(self):
+        register_listed(self.settings, "NYSE", ["AAA", "BBB"])
         # day 1 establishes AAA and BBB as known NYSE stocks
         self.write("loading/NYSE_20250109.txt",
                    DEFAULT_HEADER + "AAA,20250109,1,2,0.5,1.5,100\nBBB,20250109,1,2,0.5,1.5,100\n")
@@ -235,9 +236,15 @@ class QualityIntegrationTests(TrackingTestCase):
     def test_no_alert_for_weekend_file(self):
         self.write("loading/NYSE_20250110.txt", DEFAULT_HEADER + "AAA,20250110,1,2,0.5,1.5,100\n")
         self.loader.run()
-        # Saturday: nobody expects data
+        # Saturday: nobody expects data - the delivery is not even loaded
         self.write("loading/NYSE_20250111.txt", DEFAULT_HEADER + "ZZZ,20250111,1,2,0.5,1.5,100\n")
         r = self.loader.run()[0]
+        self.assertTrue(r.skipped)
+        self.assertEqual(r.alerts, 0)
+        # ... unless asked for: then the missing-day check knows it is a closed day
+        self.write("loading/NYSE_20250111.txt", DEFAULT_HEADER + "ZZZ,20250111,1,2,0.5,1.5,100\n")
+        r = self.loader.run(include_no_trading_days=True)[0]
+        self.assertTrue(r.ok)
         self.assertEqual(r.alerts, 0)
 
     def test_extra_holiday_suppresses_alert(self):
@@ -249,6 +256,7 @@ class QualityIntegrationTests(TrackingTestCase):
         self.assertEqual(r.alerts, 0)
 
     def test_stock_with_broken_row_counts_as_missing(self):
+        register_listed(self.settings, "NYSE", ["AAA", "BBB"])
         self.settings.skip_bad_rows = True
         self.write("loading/NYSE_20250109.txt",
                    DEFAULT_HEADER + "AAA,20250109,1,2,0.5,1.5,100\nBBB,20250109,1,2,0.5,1.5,100\n")

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ kind|capitalize }} table{% endblock %}
+{% block content %}
+<h1>{{ kind|capitalize }} table <span class="muted" style="font-size:13px;font-weight:400"><code>{{ summary.table if summary else '' }}</code></span></h1>
+<div class="monitor-nav">
+  <a href="{{ url_for('promote') }}">Active tables</a>
+  {% for k in ('daily', 'weekly', 'monthly') %}<a href="{{ url_for('active_table', kind=k) }}" class="{{ 'active' if k == kind }}">{{ k }}</a>{% endfor %}
+</div>
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+<div class="card">
+  {% if summary %}<p class="muted">{{ '{:,}'.format(summary.rows) }} rows{% if summary.rows %} &middot; {{ '{:,}'.format(summary.tickers) }} stocks &middot; {{ summary.first_period }} .. {{ summary.last_period }}{% endif %}{% if kind != 'daily' %} &middot; <code>Complete = no</code>: a trading day of the period is missing (see <a href="{{ url_for('monitor_data_errors', file=summary.table) }}">data errors</a>){% endif %}
+    {% if summary.last_run %} &middot; last {{ summary.last_run.procedure }} {{ summary.last_run.status }} {{ summary.last_run.started_at }}{% endif %}</p>{% endif %}
+  <form method="get" class="toolbar">
+    <label>Ticker <input type="text" name="ticker" value="{{ args.get('ticker', '') }}" placeholder="AAPL" style="width:120px"></label>
+    <label>From <input type="text" name="from" value="{{ args.get('from', '') }}" placeholder="YYYY-MM-DD" style="width:120px"></label>
+    <label>To <input type="text" name="to" value="{{ args.get('to', '') }}" placeholder="YYYY-MM-DD" style="width:120px"></label>
+    {% if kind != 'daily' %}<label title="periods with a trading day missing"><input type="checkbox" name="incomplete" value="1" {% if args.get('incomplete') == '1' %}checked{% endif %}> incomplete only</label>{% endif %}
+    <label>Order <select name="order"><option value="desc" {% if args.get('order') != 'asc' %}selected{% endif %}>newest first</option><option value="asc" {% if args.get('order') == 'asc' %}selected{% endif %}>oldest first</option></select></label>
+    <label>Show <input type="number" name="limit" value="{{ limit }}" min="1" max="5000" style="width:80px"></label>
+    <button type="submit" class="small">Filter</button>
+    <a class="btn small secondary" href="{{ url_for('active_table', kind=kind) }}">Reset</a>
+    <a class="btn small secondary" href="{{ url_for('api_active', kind=kind, **args) }}" style="margin-left:auto">JSON</a>
+  </form>
+  {% if rows %}
+  <div class="preview-table" style="max-height:none">
+  <table>
+    <tr>{% for c in columns %}<th class="{{ 'num' if c in ('Open', 'High', 'Low', 'Close', 'Volume', 'TradingDays', 'ISOYear', 'ISOWeek', 'Year', 'Month') }}">{{ c }}</th>{% endfor %}</tr>
+    {% for r in rows %}
+    <tr>{% for c in columns %}<td class="{{ 'num' if c in ('Open', 'High', 'Low', 'Close', 'Volume', 'TradingDays', 'ExpectedDays', 'MissingDays', 'ISOYear', 'ISOWeek', 'Year', 'Month') }} {{ 'mono' if c in ('Ticker', 'SourceFile', 'LoadId', 'MissingDates') }} {{ 'err' if c in ('MissingDays', 'MissingDates') and r.get('Complete') == 0 }}">{% if c == 'Volume' %}{{ '{:,}'.format(r[c]) }}{% elif c == 'LoadId' and r[c] %}{{ r[c][:8] }}{% elif c == 'Complete' %}{% if r[c] %}<span class="badge ok">yes</span>{% else %}<span class="badge err" title="a trading day is missing">no</span>{% endif %}{% else %}{{ r[c] if r[c] is not none else '' }}{% endif %}</td>{% endfor %}</tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">No rows match{% if summary and not summary.rows %} - the table is empty, run a promotion first{% endif %}.</p>{% endif %}
+</div>
+{% endblock %}

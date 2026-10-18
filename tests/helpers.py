@@ -26,6 +26,7 @@ def make_settings(root: Path) -> Settings:
     s.loading_dir = root / "loading"
     s.archive_dir = root / "archive"
     s.error_dir = root / "error"
+    s.skipped_dir = root / "skipped"
     s.work_dir = root / "work"
     s.log_dir = root / "logs"
     s.sqlite_path = root / "test.db"
@@ -42,6 +43,15 @@ def make_settings(root: Path) -> Settings:
         isolated.save()
     s.ensure_folders()
     return s
+
+
+def register_listed(settings: Settings, market: str, tickers, first_trade_date: str = "2020-01-02") -> None:
+    """Give the tickers a first trade date in Stock_Symbol - only then are they
+    checked for missing market days."""
+    from stock_dataload.symbols import SymbolRegistry
+    registry = SymbolRegistry(settings)
+    for ticker in tickers:
+        registry.set(ticker, market, first_trade_date=first_trade_date)
 
 
 class TempProjectTestCase(unittest.TestCase):

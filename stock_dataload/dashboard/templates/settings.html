@@ -17,6 +17,8 @@
     <span class="help">default-format text files waiting to be loaded (converter output goes here)</span>
     <label>Archive folder</label><input type="text" name="archive_dir" value="{{ s.archive_dir }}">
     <label>Error folder</label><input type="text" name="error_dir" value="{{ s.error_dir }}">
+    <label>Skipped folder</label><input type="text" name="skipped_dir" value="{{ s.skipped_dir }}">
+    <span class="help">deliveries dated on a no-trading day (weekend / holiday) end up here</span>
     <label>Work folder</label><input type="text" name="work_dir" value="{{ s.work_dir }}">
     <label>Log folder</label><input type="text" name="log_dir" value="{{ s.log_dir }}">
     <label>Formats file</label><input type="text" name="formats_file" value="{{ s.formats_file }}">
@@ -33,6 +35,18 @@
     <label>Re-loaded files</label><span class="muted">loading a file name again always deletes its previous rows first - only one copy per file</span>
   </div>
 </fieldset>
+<fieldset><legend>Active tables / promotion</legend>
+  <div class="form-grid">
+    <label>Daily table</label><input type="text" name="daily_table" value="{{ s.daily_table }}">
+    <span class="help">validated, typed rows - one per stock and day (UNIQUE ticker + day)</span>
+    <label>Weekly table</label><input type="text" name="weekly_table" value="{{ s.weekly_table }}">
+    <label>Monthly table</label><input type="text" name="monthly_table" value="{{ s.monthly_table }}">
+    <label>Market closed days</label><span><input type="checkbox" name="reject_market_closed_days" {% if s.reject_market_closed_days %}checked{% endif %}> reject staged rows dated on a weekend / holiday</span>
+    <label>Price range</label><span><input type="checkbox" name="check_price_range" {% if s.check_price_range %}checked{% endif %}> reject rows whose open / close lies outside low..high</span>
+    <label>Trading window</label><span><input type="checkbox" name="check_trading_window" {% if s.check_trading_window %}checked{% endif %}> reject rows dated before the stock's first / after its last trade date</span>
+    <label>Completeness</label><span><input type="checkbox" name="check_completeness" {% if s.check_completeness %}checked{% endif %}> mark weeks / months with a trading day missing as data errors</span>
+  </div>
+</fieldset>
 <fieldset><legend>Loader</legend>
   <div class="form-grid">
     <label>File patterns</label><input type="text" name="file_patterns" value="{{ s.file_patterns|join(';') }}">
@@ -41,6 +55,9 @@
     <span class="help">regular expression with a <code>market</code> group: NASDAQ_20250123.txt &rarr; NASDAQ</span>
     <label>Default market</label><input type="text" name="default_market" value="{{ s.default_market }}">
     <label>Skip bad rows</label><span><input type="checkbox" name="skip_bad_rows" {% if s.skip_bad_rows %}checked{% endif %}> skip invalid rows instead of failing the file</span>
+    <label>Date from file name</label><input type="text" name="date_from_filename_regex" value="{{ s.date_from_filename_regex }}">
+    <span class="help">regular expression with a <code>date</code> group: NASDAQ_20250123.txt &rarr; 2025-01-23</span>
+    <label>No-trading days</label><span><input type="checkbox" name="skip_no_trading_days" {% if s.skip_no_trading_days %}checked{% endif %}> skip files dated on a day their market was closed (<a href="{{ url_for('calendar_page') }}">trading calendar</a>)</span>
     <label>File encoding</label><input type="text" name="encoding" value="{{ s.encoding }}">
   </div>
 </fieldset>

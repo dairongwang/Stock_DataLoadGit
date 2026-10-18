@@ -20,7 +20,7 @@ from pathlib import Path
 from stock_dataload.config import load_settings, save_settings
 from stock_dataload.db import StageDatabase
 
-from .helpers import ORIGINAL, SAMPLES, TempProjectTestCase
+from .helpers import ORIGINAL, SAMPLES, TempProjectTestCase, register_listed
 
 ORIGINAL_TEXT = ORIGINAL.read_text(encoding="utf-8")
 
@@ -247,6 +247,7 @@ class BrowserDashboardTests(TempProjectTestCase):
     def test_monitoring_pages_track_loads_errors_and_alerts(self):
         """A user loads a good day, a broken file and a day with a missing stock, then
         follows the Monitoring pages to see what happened."""
+        register_listed(self.state.settings, "NYSE", ["AAA", "BBB"])
         loading = self.state.settings.loading_dir
         header = "<ticker>,<date>,<open>,<high>,<low>,<close>,<vol>\n"
         (loading / "NYSE_20250109.txt").write_text(
@@ -400,6 +401,76 @@ class BrowserDashboardTests(TempProjectTestCase):
         self.assertNotIn("Settings", nav)
         pg.goto(self.base + "/users")
         self.assertIn("Not allowed", pg.locator("main").inner_text())
+
+
+    def test_bulk_load_a_folder_and_promote_by_clicking(self):
+        """Overview: bulk load a folder -> Active tables: run the promotion -> browse the weekly table."""
+        folder = self.root / "deliveries"
+        folder.mkdir()
+        header = "<ticker>,<date>,<open>,<high>,<low>,<close>,<vol>\n"
+        for day, close in (("20250106", "1.5"), ("20250107", "1.6"), ("20250108", "1.7")):
+            (folder / f"NASDAQ_{day}.txt").write_text(header + f"AAA,{day},1,2,0.5,{close},100\n", encoding="utf-8")
+        (folder / "NASDAQ_20250105.txt").write_text(header + "AAA,20250105,1,2,0.5,1.4,100\n", encoding="utf-8")  # Sunday
+        pg = self.page
+        pg.goto(self.base + "/")
+        pg.fill("input[name=folder]", str(folder))
+        pg.get_by_role("button", name="Load folder").click()
+        pg.wait_for_load_state()
+        msgs = self.flashes()
+        self.assertIn("3 of 4 file(s) loaded (3 rows), 1 skipped (no trading day)", msgs[0])
+        self.assertTrue(any("NASDAQ_20250105.txt: skipped - NASDAQ was closed on 2025-01-05 (weekend (Sunday))" in m
+                            for m in msgs), msgs)
+        self.assertEqual(len(list(folder.iterdir())), 4, "files stay in place")
+        self.assertIn("3", pg.locator(".stat").first.inner_text())
+
+        pg.click("header nav >> text=Active tables")
+        pg.wait_for_load_state()
+        self.assertEqual(pg.title(), "Active tables - dashboard")
+        self.assertIn("never promoted", pg.locator("main").inner_text())
+        pg.select_option("select[name=what]", "all")
+        pg.get_by_role("button", name="Run promotion").click()
+        pg.wait_for_load_state()
+        msgs = self.flashes()
+        self.assertTrue(any("promote_daily: completed (full) - 3 rows read: 3 inserted" in m for m in msgs), msgs)
+        self.assertTrue(any("promote_weekly: completed" in m and "1 inserted" in m for m in msgs), msgs)
+        self.assertTrue(any("promote_monthly: completed" in m and "1 inserted" in m for m in msgs), msgs)
+        cards = pg.locator(".stat-card").all_inner_texts()
+        self.assertIn("3", cards[0])
+        self.assertEqual(pg.locator("table tr", has_text="promote_daily").count(), 1)
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_promote.png"),
+                          full_page=True)
+
+        pg.click(".stat-card >> text=weekly rows")
+        pg.wait_for_load_state()
+        self.assertEqual(pg.title(), "Weekly table - dashboard")
+        text = pg.locator("table").inner_text()
+        self.assertIn("2025-01-06", text)        # WeekStart (Monday)
+        self.assertIn("2025-01-12", text)        # WeekEnd (Sunday)
+        self.assertIn("1.7", text)               # close of the last day
+        self.assertIn("300", text)               # volume of the week
+        pg.fill("input[name=ticker]", "ZZZ")
+        pg.get_by_role("button", name="Filter").click()
+        pg.wait_for_load_state()
+        self.assertIn("No rows match", pg.locator("main").inner_text())
+
+        # the skipped Sunday delivery is in the load history and the calendar explains why
+        pg.goto(self.base + "/monitor/history")
+        row = pg.locator("table tr", has_text="NASDAQ_20250105.txt")
+        self.assertIn("skipped", row.inner_text())
+        pg.click("header nav >> text=Trading calendar")
+        pg.wait_for_load_state()
+        self.assertEqual(pg.title(), "Trading calendar - dashboard")
+        self.assertIn("NASDAQ", pg.locator("main").inner_text())
+        pg.select_option("form[method=get] select[name=market]", "NASDAQ")
+        pg.fill("form[method=get] input[name=year]", "2025")
+        pg.check("form[method=get] input[name=all]")
+        pg.get_by_role("button", name="Show").click()
+        pg.wait_for_load_state()
+        self.assertIn("weekend (Sunday)", pg.locator("table tr", has_text="2025-01-05").inner_text())
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_calendar.png"),
+                          full_page=True)
 
 
 if __name__ == "__main__":

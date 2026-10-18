@@ -11,7 +11,7 @@ from stock_dataload.db import MANUAL_LOAD_ID, StageDatabase
 from stock_dataload.loader import StageLoader
 from stock_dataload.quality import DATA_ERROR_TABLE, DataErrorRecord, DataErrorRepository, QualityIssue
 
-from .helpers import DEFAULT_HEADER, TempProjectTestCase
+from .helpers import DEFAULT_HEADER, TempProjectTestCase, register_listed
 
 GOOD = {"Market": "NYSE", "Ticker": "AAA", "TradeDate": "20250110", "Open": "1", "High": "2",
         "Low": "0.5", "Close": "1.5", "Vol": "100"}
@@ -165,6 +165,7 @@ class CorrectTests(CorrectionTestCase):
 
 class AddRowTests(CorrectionTestCase):
     def test_add_missing_row_resolves_alert(self):
+        register_listed(self.settings, "NYSE", ["AAA", "BBB"])
         self.load("NYSE_20250109.txt", "AAA,20250109,1,2,0.5,1.5,100\nBBB,20250109,1,2,0.5,1.5,100\n")
         self.load("NYSE_20250110.txt", "AAA,20250110,1,2,0.5,1.5,100\n")
         alert = self.repo.fetch(alerts_only=True)[0]
@@ -221,7 +222,8 @@ class HistoryAndTableTests(CorrectionTestCase):
 
     def test_default_construction(self):
         service = CorrectionService(self.settings)
-        self.assertEqual(service.checker.strategy_names(), ["date_is_valid", "numeric_columns", "high_above_low"])
+        self.assertEqual(service.checker.strategy_names(), ["date_is_valid", "numeric_columns", "high_above_low",
+                                                            "before_first_trade_date", "after_last_trade_date"])
 
 
 class StageRowAccessTests(CorrectionTestCase):

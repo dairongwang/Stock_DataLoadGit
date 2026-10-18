@@ -38,6 +38,7 @@ class Settings:
     loading_dir: Path = PROJECT_ROOT / "data" / "loading"        # default-format files waiting to be loaded
     archive_dir: Path = PROJECT_ROOT / "data" / "archive"        # successfully loaded files
     error_dir: Path = PROJECT_ROOT / "data" / "error"            # files that failed to load
+    skipped_dir: Path = PROJECT_ROOT / "data" / "skipped"        # deliveries dated on a no-trading day
     work_dir: Path = PROJECT_ROOT / "data" / "work"              # scratch space for the converter
     log_dir: Path = PROJECT_ROOT / "logs"
 
@@ -48,11 +49,29 @@ class Settings:
     truncate_before_load: bool = False
     # NOTE: re-loading a file always deletes its previous rows first (one copy
     # per file, guaranteed) - this is not configurable.
+    # active (validated, typed) tables fed by the promotion procedures
+    daily_table: str = "Stock_Daily"
+    weekly_table: str = "Stock_Weekly"
+    monthly_table: str = "Stock_Monthly"
+
+    # --- promotion staging -> active tables (promotion.py) -----------------------
+    # reject rows whose trade date is a day the market was closed (weekend / holiday)
+    reject_market_closed_days: bool = True
+    # reject rows whose open / close price lies outside the low..high range
+    check_price_range: bool = True
+    # reject rows dated before the stock's first / after its last trade date (Stock_Symbol table)
+    check_trading_window: bool = True
+    # weekly / monthly: flag aggregates with a trading day missing (No_Trading_Day + Stock_Symbol tables)
+    check_completeness: bool = True
 
     # --- loader --------------------------------------------------------------
     file_patterns: tuple[str, ...] = ("*.txt",)
     market_from_filename_regex: str = r"^(?P<market>[A-Za-z]+)_\d{8}"
     default_market: str = ""
+    # the trade date in the file name (NASDAQ_20250123.txt -> 2025-01-23); a file dated on a
+    # no-trading day of its market (No_Trading_Day table) is skipped, not loaded
+    date_from_filename_regex: str = r"(?P<date>\d{8})"
+    skip_no_trading_days: bool = True
     skip_bad_rows: bool = False
     encoding: str = "utf-8-sig"
 
@@ -82,7 +101,8 @@ class Settings:
         return {
             "conversion_dir": self.conversion_dir, "converted_dir": self.converted_dir,
             "loading_dir": self.loading_dir, "archive_dir": self.archive_dir,
-            "error_dir": self.error_dir, "work_dir": self.work_dir, "log_dir": self.log_dir,
+            "error_dir": self.error_dir, "skipped_dir": self.skipped_dir, "work_dir": self.work_dir,
+            "log_dir": self.log_dir,
         }
 
     def ensure_folders(self) -> None:
@@ -145,7 +165,7 @@ def load_settings(config_path: str | os.PathLike | None = None) -> Settings:
     defaults = {
         "conversion_dir": "data/conversion", "converted_dir": "data/converted",
         "loading_dir": "data/loading", "archive_dir": "data/archive", "error_dir": "data/error",
-        "work_dir": "data/work", "log_dir": "logs",
+        "skipped_dir": "data/skipped", "work_dir": "data/work", "log_dir": "logs",
     }
     section = parser["paths"] if parser.has_section("paths") else {}
     for key, default in defaults.items():
@@ -160,6 +180,16 @@ def load_settings(config_path: str | os.PathLike | None = None) -> Settings:
         settings.stage_table = s.get("stage_table", "Stock_Stage").strip()
         settings.batch_size = _get_int(s, "batch_size", 5000)
         settings.truncate_before_load = _get_bool(s, "truncate_before_load", False)
+        settings.daily_table = s.get("daily_table", "Stock_Daily").strip() or "Stock_Daily"
+        settings.weekly_table = s.get("weekly_table", "Stock_Weekly").strip() or "Stock_Weekly"
+        settings.monthly_table = s.get("monthly_table", "Stock_Monthly").strip() or "Stock_Monthly"
+
+    if parser.has_section("promotion"):
+        s = parser["promotion"]
+        settings.reject_market_closed_days = _get_bool(s, "reject_market_closed_days", True)
+        settings.check_price_range = _get_bool(s, "check_price_range", True)
+        settings.check_trading_window = _get_bool(s, "check_trading_window", True)
+        settings.check_completeness = _get_bool(s, "check_completeness", True)
 
     if parser.has_section("quality"):
         s = parser["quality"]
@@ -177,6 +207,8 @@ def load_settings(config_path: str | os.PathLike | None = None) -> Settings:
         settings.default_market = s.get("default_market", "").strip()
         settings.skip_bad_rows = _get_bool(s, "skip_bad_rows", False)
         settings.encoding = s.get("encoding", "utf-8-sig").strip() or "utf-8-sig"
+        settings.date_from_filename_regex = s.get("date_from_filename_regex", settings.date_from_filename_regex)
+        settings.skip_no_trading_days = _get_bool(s, "skip_no_trading_days", True)
 
     if parser.has_section("formats"):
         for name, cols in parser["formats"].items():
@@ -195,6 +227,9 @@ def load_settings(config_path: str | os.PathLike | None = None) -> Settings:
         raise ConfigError("[database] batch_size must be > 0")
     if not settings.stage_table:
         raise ConfigError("[database] stage_table must not be empty")
+    names = [settings.stage_table, settings.daily_table, settings.weekly_table, settings.monthly_table]
+    if len({n.lower() for n in names}) != len(names):
+        raise ConfigError("[database] stage_table, daily_table, weekly_table and monthly_table must differ")
 
     return settings
 
@@ -220,6 +255,8 @@ loading_dir = {loading_dir}
 archive_dir = {archive_dir}
 ; Files that failed to load (+ .error.txt reports)
 error_dir = {error_dir}
+; Deliveries dated on a no-trading day (weekend / holiday) - skipped, not loaded
+skipped_dir = {skipped_dir}
 ; Scratch folder for the converter
 work_dir = {work_dir}
 log_dir = {log_dir}
@@ -231,6 +268,21 @@ stage_table = {stage_table}
 batch_size = {batch_size}
 truncate_before_load = {truncate_before_load}
 ; re-loading a file always deletes its previous rows first (one copy per file) - not configurable
+; active tables: validated, typed daily rows and the weekly / monthly aggregates (see 'promote')
+daily_table = {daily_table}
+weekly_table = {weekly_table}
+monthly_table = {monthly_table}
+
+[promotion]
+; validation of the promotion staging -> daily table (rejected rows are recorded in Data_Error)
+; reject rows dated on a day the market was closed (weekend / US holiday / extra_holidays)
+reject_market_closed_days = {reject_market_closed_days}
+; reject rows whose open or close price lies outside the low..high range
+check_price_range = {check_price_range}
+; reject rows dated before the stock's first / after its last trade date (Stock_Symbol table, see 'symbols')
+check_trading_window = {check_trading_window}
+; weekly / monthly: a week / month with a trading day missing is marked incomplete and recorded in Data_Error
+check_completeness = {check_completeness}
 
 [quality]
 ; run the strategy-based data quality checks after every load (findings -> Data_Error table)
@@ -246,6 +298,10 @@ market_from_filename_regex = {market_from_filename_regex}
 default_market = {default_market}
 skip_bad_rows = {skip_bad_rows}
 encoding = {encoding}
+; the trade date in the file name (NASDAQ_20250123.txt -> 2025-01-23)
+date_from_filename_regex = {date_from_filename_regex}
+; skip files dated on a day their market was closed (No_Trading_Day table; see 'no-trading-days')
+skip_no_trading_days = {skip_no_trading_days}
 
 [formats]
 ; custom file formats are kept in this JSON file (edit via the dashboard)
@@ -274,16 +330,25 @@ def save_settings(settings: Settings, path: str | os.PathLike | None = None) -> 
     text = _CONFIG_TEMPLATE.format(
         conversion_dir=_rel(settings.conversion_dir, base), converted_dir=_rel(settings.converted_dir, base),
         loading_dir=_rel(settings.loading_dir, base), archive_dir=_rel(settings.archive_dir, base),
-        error_dir=_rel(settings.error_dir, base), work_dir=_rel(settings.work_dir, base),
+        error_dir=_rel(settings.error_dir, base), skipped_dir=_rel(settings.skipped_dir, base),
+        work_dir=_rel(settings.work_dir, base),
         log_dir=_rel(settings.log_dir, base), sqlite_path=_rel(settings.sqlite_path, base),
         stage_table=settings.stage_table, batch_size=settings.batch_size,
         truncate_before_load=str(settings.truncate_before_load).lower(),
+        daily_table=settings.daily_table, weekly_table=settings.weekly_table,
+        monthly_table=settings.monthly_table,
+        reject_market_closed_days=str(settings.reject_market_closed_days).lower(),
+        check_price_range=str(settings.check_price_range).lower(),
+        check_trading_window=str(settings.check_trading_window).lower(),
+        check_completeness=str(settings.check_completeness).lower(),
         quality_enabled=str(settings.quality_checks_enabled).lower(),
         alert_missing_days=str(settings.alert_missing_days).lower(),
         extra_holidays=", ".join(settings.extra_market_holidays),
         file_patterns=";".join(settings.file_patterns),
         market_from_filename_regex=settings.market_from_filename_regex,
         default_market=settings.default_market, skip_bad_rows=str(settings.skip_bad_rows).lower(),
+        date_from_filename_regex=settings.date_from_filename_regex,
+        skip_no_trading_days=str(settings.skip_no_trading_days).lower(),
         encoding=settings.encoding, formats_file=_rel(settings.formats_file, base),
         dashboard_host=settings.dashboard_host, dashboard_port=settings.dashboard_port,
         secret_key_file=_rel(settings.secret_key_file, base),

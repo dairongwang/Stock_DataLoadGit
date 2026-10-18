@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Active tables{% endblock %}
+{% block content %}
+<h1>Active tables <span class="muted" style="font-size:13px;font-weight:400">staging &rarr; daily &rarr; weekly / monthly</span></h1>
+<p class="muted">The staging table holds files <i>as delivered</i>. <b>Promote daily</b> validates the staged rows (date, numbers,
+prices &gt; 0, high &ge; low, open / close within low..high, whole-number volume, market open) and writes one typed row per
+stock and day into <code>{{ settings.daily_table }}</code> (UNIQUE ticker + day). <b>Promote weekly / monthly</b> aggregate the
+daily table into one row per stock and ISO week / month (open of the first day, highest high, lowest low, close of the last day,
+summed volume). Rejected rows are listed under <a href="{{ url_for('monitor_data_errors') }}">data errors</a>; correct them and promote again.</p>
+
+<div class="stats" style="grid-template-columns:repeat(3, 1fr)">
+  {% for t in summaries %}
+  <a class="card stat-card" href="{{ url_for('active_table', kind=t.kind) }}">
+    <div class="stat">{{ '{:,}'.format(t.rows) }}</div>
+    <div class="muted"><code>{{ t.table }}</code> &middot; {{ t.kind }} rows</div>
+    {% if t.rows %}<div class="muted" style="font-size:12px">{{ '{:,}'.format(t.tickers) }} stocks &middot; {{ t.first_period }} .. {{ t.last_period }}</div>{% endif %}
+    {% if t.last_run %}<div style="font-size:12px" class="{{ 'ok' if t.last_run.status == 'completed' else 'err' }}">last {{ t.last_run.procedure }} {{ t.last_run.status }} {{ t.last_run.started_at }}</div>
+    {% else %}<div class="muted" style="font-size:12px">never promoted</div>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+
+{% if can('operator') %}
+<div class="grid2">
+  <div class="card">
+    <h2>Promote</h2>
+    <form method="post" action="{{ url_for('promote_run') }}">
+      <div class="form-grid">
+        <label>Procedure</label>
+        <select name="what">
+          <option value="all">all: daily, then weekly, then monthly</option>
+          <option value="daily">daily: staging &rarr; {{ settings.daily_table }}</option>
+          <option value="weekly">weekly: daily &rarr; {{ settings.weekly_table }}</option>
+          <option value="monthly">monthly: daily &rarr; {{ settings.monthly_table }}</option>
+        </select>
+        <label>Mode</label><span><input type="checkbox" name="full"> full - re-promote everything (default: only what changed since the last run)</span>
+        <label>Ticker</label><input type="text" name="ticker" placeholder="optional, e.g. AAPL" style="width:160px">
+        <label>Source file</label><input type="text" name="source_file" placeholder="daily only, e.g. NASDAQ_20230103.txt" style="width:260px">
+        <label>Trade dates</label><span><input type="text" name="date_from" placeholder="from YYYYMMDD" style="width:130px"> <input type="text" name="date_to" placeholder="to YYYYMMDD" style="width:130px"> <span class="muted">(daily only)</span></span>
+      </div>
+      <div class="actions"><button type="submit">Run promotion</button></div>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Validation rules (promote daily)</h2>
+    <table>
+      <tr><th>Rule</th><th class="wrap">Rejects a staged row when</th></tr>
+      <tr><td class="mono">ticker_required</td><td class="wrap">the ticker is empty</td></tr>
+      <tr><td class="mono">date_is_valid</td><td class="wrap">the date is not a real YYYYMMDD calendar date</td></tr>
+      <tr><td class="mono">numeric_columns</td><td class="wrap">open, high, low, close or vol is missing or not a number</td></tr>
+      <tr><td class="mono">positive_price</td><td class="wrap">a price is 0 or negative</td></tr>
+      <tr><td class="mono">volume_invalid</td><td class="wrap">vol is negative or not a whole number</td></tr>
+      <tr><td class="mono">high_above_low</td><td class="wrap">high is smaller than low</td></tr>
+      <tr><td class="mono">price_range</td><td class="wrap">open or close lies outside low..high <span class="muted">({{ 'on' if settings.check_price_range else 'off' }} - settings)</span></td></tr>
+      <tr><td class="mono">market_closed</td><td class="wrap">the market was closed on that day (weekend / holiday) <span class="muted">({{ 'on' if settings.reject_market_closed_days else 'off' }} - settings)</span></td></tr>
+      <tr><td class="mono">before_first_trade_date<br>after_last_trade_date</td><td class="wrap">the date lies outside the stock's trading window (symbol table) <span class="muted">({{ 'on' if settings.check_trading_window else 'off' }} - settings)</span></td></tr>
+    </table>
+    <h2 style="margin-top:14px">Validation (promote weekly / monthly)</h2>
+    <table>
+      <tr><th>Rule</th><th class="wrap">Marks a week / month as incomplete (data error) when</th></tr>
+      <tr><td class="mono">incomplete_week<br>incomplete_month</td><td class="wrap">a trading day of the period - the market open (trading calendar), inside the stock's trading window (symbol table), between the first and the last delivery loaded - has no daily row. The aggregate is still written from the days there are, with <code>Complete = no</code> and the missing dates; the finding is resolved once the gap is filled <span class="muted">({{ 'on' if settings.check_completeness else 'off' }} - settings)</span></td></tr>
+    </table>
+    <p class="muted" style="margin-bottom:0">When the same stock/day is staged more than once, the most recently loaded row wins. Existing active rows are only updated when something changed.</p>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <form method="get" class="toolbar">
+    <h2 style="margin:0">Promotion runs <span class="muted" style="font-size:12px;font-weight:400">Promotion_History</span></h2>
+    <label style="margin-left:auto">Procedure
+      <select name="procedure"><option value="">all</option>
+        {% for p in procedures %}<option value="{{ p }}" {% if args.get('procedure') == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+      </select></label>
+    <label>Show <input type="number" name="limit" value="{{ limit }}" min="1" max="5000" style="width:80px"></label>
+    <button type="submit" class="small">Filter</button>
+    <a class="btn small secondary" href="{{ url_for('api_promotions', **args) }}">JSON</a>
+  </form>
+  {% if records %}
+  <table>
+    <tr><th>Started</th><th>Procedure</th><th>Mode</th><th>Status</th><th class="num">Read</th><th class="num">Inserted</th><th class="num">Updated</th><th class="num">Unchanged</th><th class="num">Rejected</th><th class="num">Skipped</th><th class="num">Deleted</th><th class="num" title="weekly / monthly periods with a trading day missing">Incomplete</th><th class="wrap">Parameters / message</th></tr>
+    {% for r in records %}
+    <tr>
+      <td class="muted">{{ r.started_at }}</td>
+      <td class="mono">{{ r.procedure }}</td>
+      <td>{{ r.mode }}{% if r.filtered %} <span class="badge" title="limited to a file / ticker / date range">filtered</span>{% endif %}</td>
+      <td><span class="badge {{ 'ok' if r.status == 'completed' else 'err' }}">{{ r.status }}</span></td>
+      <td class="num">{{ '{:,}'.format(r.rows_read) }}</td>
+      <td class="num">{{ '{:,}'.format(r.rows_inserted) }}</td>
+      <td class="num">{{ '{:,}'.format(r.rows_updated) }}</td>
+      <td class="num">{{ '{:,}'.format(r.rows_unchanged) }}</td>
+      <td class="num {{ 'err' if r.rows_rejected }}">{{ '{:,}'.format(r.rows_rejected) }}</td>
+      <td class="num">{{ '{:,}'.format(r.rows_skipped) }}</td>
+      <td class="num">{{ '{:,}'.format(r.rows_deleted) }}</td>
+      <td class="num {{ 'warn' if r.rows_incomplete }}">{{ '{:,}'.format(r.rows_incomplete) }}</td>
+      <td class="wrap mono muted">{{ r.parameters or '' }} {% if r.message %}<span class="err">{{ r.message }}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No promotion runs yet.</p>{% endif %}
+</div>
+{% endblock %}

@@ -23,6 +23,9 @@
     <Content Include="docs\dashboard_format_editor.png" />
     <Content Include="docs\dashboard_overview.png" />
     <Content Include="docs\dashboard_preview.png" />
+    <Content Include="docs\dashboard_promote.png" />
+    <Content Include="docs\dashboard_calendar.png" />
+    <Content Include="docs\dashboard_symbols.png" />
     <Content Include="docs\dashboard_settings.png" />
     <Content Include="requirements.txt" />
     <Content Include="samples\NASDAQ_20250123.txt" />
@@ -47,6 +50,10 @@
     <Content Include="stock_dataload\dashboard\templates\monitor_data_errors.html" />
     <Content Include="stock_dataload\dashboard\templates\monitor_history.html" />
     <Content Include="stock_dataload\dashboard\templates\preview.html" />
+    <Content Include="stock_dataload\dashboard\templates\promote.html" />
+    <Content Include="stock_dataload\dashboard\templates\active.html" />
+    <Content Include="stock_dataload\dashboard\templates\calendar.html" />
+    <Content Include="stock_dataload\dashboard\templates\symbols.html" />
     <Content Include="stock_dataload\dashboard\templates\settings.html" />
   </ItemGroup>
   <ItemGroup>
@@ -65,6 +72,9 @@
     <Compile Include="stock_dataload\loader.py" />
     <Compile Include="stock_dataload\logging_setup.py" />
     <Compile Include="stock_dataload\market_calendar.py" />
+    <Compile Include="stock_dataload\promotion.py" />
+    <Compile Include="stock_dataload\symbols.py" />
+    <Compile Include="stock_dataload\trading_calendar.py" />
     <Compile Include="stock_dataload\quality.py" />
     <Compile Include="stock_dataload\readers.py" />
     <Compile Include="stock_dataload\__init__.py" />
@@ -72,6 +82,13 @@
     <Compile Include="tests\helpers.py" />
     <Compile Include="tests\test_config_cli.py" />
     <Compile Include="tests\test_audit.py" />
+    <Compile Include="tests\test_bulk_load.py" />
+    <Compile Include="tests\test_dashboard_promotion.py" />
+    <Compile Include="tests\test_file_handles.py" />
+    <Compile Include="tests\test_nasdaq_2023.py" />
+    <Compile Include="tests\test_promotion.py" />
+    <Compile Include="tests\test_symbols.py" />
+    <Compile Include="tests\test_trading_calendar.py" />
     <Compile Include="tests\test_auth.py" />
     <Compile Include="tests\test_correction.py" />
     <Compile Include="tests\test_converter.py" />

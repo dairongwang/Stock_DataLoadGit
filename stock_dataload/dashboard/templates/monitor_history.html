@@ -11,7 +11,7 @@
     <a class="btn small secondary" href="{{ url_for('monitor_history') }}">Reset</a>
     <a class="btn small secondary" href="{{ url_for('api_history', **args) }}" style="margin-left:auto">JSON</a>
   </form>
-  <p class="muted">Status <code>loaded</code>: rows are in the staging table &middot; <code>replaced</code>: a later load of the same file deleted and re-loaded them (one copy per file) &middot; <code>failed</code>: rolled back, see <a href="{{ url_for('monitor_errors') }}">errors</a>.</p>
+  <p class="muted">Status <code>loaded</code>: rows are in the staging table &middot; <code>replaced</code>: a later load of the same file deleted and re-loaded them (one copy per file) &middot; <code>failed</code>: rolled back, see <a href="{{ url_for('monitor_errors') }}">errors</a> &middot; <code>skipped</code>: dated on a no-trading day of its market (<a href="{{ url_for('calendar_page') }}">trading calendar</a>).</p>
   {% if records %}
   <table>
     <tr><th>When</th><th>File</th><th>Market</th><th>Status</th><th class="num">Rows</th><th class="num">Size</th><th>Content hash</th><th>Load id</th><th class="wrap">Message</th></tr>
@@ -20,7 +20,7 @@
       <td class="muted">{{ h.loaded_at }}</td>
       <td class="mono">{{ h.file_name }}</td>
       <td>{{ h.market or '' }}</td>
-      <td><span class="badge {{ 'ok' if h.status == 'loaded' else 'err' if h.status == 'failed' else '' }}">{{ h.status }}</span></td>
+      <td><span class="badge {{ 'ok' if h.status == 'loaded' else 'err' if h.status == 'failed' else 'warn' if h.status == 'skipped' else '' }}">{{ h.status }}</span></td>
       <td class="num">{{ '{:,}'.format(h.rows_loaded) }}</td>
       <td class="num">{{ h.file_size|filesize if h.file_size is not none else '' }}</td>
       <td class="mono muted" title="{{ h.file_hash }}">{{ h.file_hash[:12] }}</td>

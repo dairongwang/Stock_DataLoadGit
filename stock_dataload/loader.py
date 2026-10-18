@@ -17,10 +17,15 @@ Work flow for every file found in ``loading_dir``:
    (``ticker,date,open,high,low,close,vol``) - otherwise the file is moved
    to ``error_dir`` with a hint to run the converter first;
 4. derive ``Market`` from the file name (``NASDAQ_20250123.txt`` -> ``NASDAQ``)
-   unless an explicit market is given;
+   unless an explicit market is given; a delivery dated (file name) on a day
+   its market was closed - weekend, holiday, ad-hoc closure, see the
+   ``No_Trading_Day`` table (:mod:`trading_calendar`) - is **skipped** with a
+   warning and moved to ``skipped_dir``;
 5. validate the rows and bulk insert them inside ONE transaction;
-6. run the data quality strategies (:mod:`quality`) - findings land in
-   the ``Data_Error`` table, missing-market-day findings as alerts;
+6. register the symbols seen in the ``Stock_Symbol`` table (:mod:`symbols`)
+   and run the data quality strategies (:mod:`quality`) - findings land in
+   the ``Data_Error`` table, missing-market-day findings as alerts (only for
+   stocks inside their known trading window);
 7. on success move the file to ``archive_dir``, on failure roll back and
    move the file to ``error_dir`` together with a ``.error.txt`` report.
 
@@ -36,17 +41,20 @@ import logging
 import re
 import shutil
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator, Mapping
 
 from . import formats, market_calendar
 from .audit import AuditLogger
 from .config import Settings
-from .db import HISTORY_FAILED, HISTORY_LOADED, StageDatabase, StageRow, file_sha256, now_iso
+from .db import HISTORY_FAILED, HISTORY_LOADED, HISTORY_SKIPPED, StageDatabase, StageRow, file_sha256, now_iso
 from .quality import (DataErrorRepository, DataQualityChecker, DataRow, QualityContext,
                       QualityIssue, SEVERITY_ERROR)
+from .symbols import SymbolRegistry
+from .trading_calendar import TradingCalendar
 
 log = logging.getLogger(__name__)
 
@@ -75,13 +83,15 @@ class RejectedRow:
 @dataclass
 class LoadResult:
     source_file: Path
-    status: str = "pending"          # loaded | failed
+    status: str = "pending"          # loaded | failed | skipped
     load_id: str = ""
     market: str = ""
+    trade_date: date | None = None   # date in the file name (if any)
     file_hash: str = ""
     rows_loaded: int = 0
     rows_rejected: int = 0
     rows_replaced: int = 0           # rows of a previous load of this file that were deleted
+    new_symbols: int = 0             # tickers seen for the first time (added to Stock_Symbol)
     replaced_load_id: str = ""       # LoadId of the previous load that was replaced
     data_errors: int = 0             # quality findings recorded in Data_Error
     alerts: int = 0                  # alert-level findings (missing market day)
@@ -100,6 +110,11 @@ class LoadResult:
     def failed(self) -> bool:
         return self.status == "failed"
 
+    @property
+    def skipped(self) -> bool:
+        """Not loaded on purpose: the file is dated on a no-trading day of its market."""
+        return self.status == "skipped"
+
     def __str__(self) -> str:
         base = f"{self.source_file.name}: {self.status}"
         if self.ok:
@@ -108,11 +123,129 @@ class LoadResult:
                 base += f" [re-load: {self.rows_replaced} rows of the previous load replaced]"
             if self.rows_rejected:
                 base += f" [{self.rows_rejected} rows skipped]"
+            if self.new_symbols:
+                base += f" [{self.new_symbols} new symbol(s)]"
             if self.data_errors:
                 base += f" [{self.data_errors} data error(s), {self.alerts} alert(s)]"
-        elif self.message:
+        if self.message:
             base += f" - {self.message}"
         return base
+
+
+@dataclass
+class FolderLoadResult:
+    """Outcome of a bulk load of a folder (see :meth:`StageLoader.load_folder`)."""
+    folder: Path
+    status: str = "pending"          # completed | stopped | interrupted | failed
+    files: list[Path] = field(default_factory=list)          # files found (sorted)
+    results: list[LoadResult] = field(default_factory=list)  # one per file attempted
+    message: str = ""
+    started: datetime = field(default_factory=datetime.now)
+    finished: datetime | None = None
+
+    @property
+    def loaded(self) -> int:
+        return sum(1 for r in self.results if r.ok)
+
+    @property
+    def failed(self) -> int:
+        return sum(1 for r in self.results if r.failed)
+
+    @property
+    def skipped(self) -> int:
+        return sum(1 for r in self.results if r.skipped)
+
+    @property
+    def not_attempted(self) -> int:
+        return max(len(self.files) - len(self.results), 0)
+
+    @property
+    def rows_loaded(self) -> int:
+        return sum(r.rows_loaded for r in self.results if r.ok)
+
+    @property
+    def rows_rejected(self) -> int:
+        return sum(r.rows_rejected for r in self.results)
+
+    @property
+    def data_errors(self) -> int:
+        return sum(r.data_errors for r in self.results)
+
+    @property
+    def alerts(self) -> int:
+        return sum(r.alerts for r in self.results)
+
+    @property
+    def failures(self) -> list[LoadResult]:
+        return [r for r in self.results if r.failed]
+
+    @property
+    def ok(self) -> bool:
+        """Every file found was loaded (or skipped as a no-trading day)."""
+        return self.status == "completed" and not self.failed and not self.not_attempted
+
+    @property
+    def duration(self) -> float:
+        end = self.finished or datetime.now()
+        return (end - self.started).total_seconds()
+
+    def as_dict(self) -> dict:
+        return {"folder": str(self.folder), "status": self.status, "files": len(self.files),
+                "loaded": self.loaded, "failed": self.failed, "skipped": self.skipped,
+                "not_attempted": self.not_attempted,
+                "rows_loaded": self.rows_loaded, "rows_rejected": self.rows_rejected,
+                "data_errors": self.data_errors, "alerts": self.alerts,
+                "seconds": round(self.duration, 1), "message": self.message}
+
+    def __str__(self) -> str:
+        text = (f"{self.folder}: {self.status} - {self.loaded} of {len(self.files)} file(s) loaded "
+                f"({self.rows_loaded:,} rows)")
+        if self.failed:
+            text += f", {self.failed} failed"
+        if self.skipped:
+            text += f", {self.skipped} skipped (no trading day)"
+        if self.not_attempted:
+            text += f", {self.not_attempted} not attempted"
+        if self.rows_rejected:
+            text += f", {self.rows_rejected} row(s) skipped"
+        if self.data_errors:
+            text += f", {self.data_errors} data error(s) / {self.alerts} alert(s)"
+        text += f" in {self.duration:.1f}s"
+        if self.message:
+            text += f" - {self.message}"
+        return text
+
+
+class KnownTickers:
+    """Tickers per source file of one market, kept up to date across the files
+    of a multi-file run.
+
+    The missing-market-day check needs "every ticker seen in *other* files of
+    the market".  Asking the database after each file means a full scan of the
+    growing staging table per file - quadratic for a bulk load of a year.  This
+    registry is built from ONE scan (:meth:`StageDatabase.tickers_by_source`)
+    and then maintained per file, giving exactly the same answer.
+    """
+
+    def __init__(self, by_file: Mapping[str, frozenset[str]]):
+        self.by_file: dict[str, frozenset[str]] = dict(by_file)
+        self.counts: Counter[str] = Counter()
+        for tickers in self.by_file.values():
+            self.counts.update(tickers)
+
+    def replace_file(self, source_file: str, tickers: Iterable[str]) -> None:
+        """The rows of *source_file* are now exactly *tickers* (re-load aware)."""
+        old = self.by_file.pop(source_file, None)
+        if old:
+            self.counts.subtract(old)
+        new = frozenset(t for t in tickers if t)
+        self.by_file[source_file] = new
+        self.counts.update(new)
+
+    def expected_for(self, source_file: str) -> frozenset[str]:
+        """Tickers present in at least one file other than *source_file*."""
+        own = self.by_file.get(source_file, frozenset())
+        return frozenset(t for t, n in self.counts.items() if n - (1 if t in own else 0) > 0)
 
 
 def unique_destination(folder: Path, name: str) -> Path:
@@ -142,13 +275,19 @@ class StageLoader:
 
     def __init__(self, settings: Settings, db: StageDatabase | None = None,
                  audit: AuditLogger | None = None, checker: DataQualityChecker | None = None,
-                 data_errors: DataErrorRepository | None = None):
+                 data_errors: DataErrorRepository | None = None, calendar: TradingCalendar | None = None,
+                 symbols: SymbolRegistry | None = None):
         self.settings = settings
         self.db = db or StageDatabase(settings)
         self.audit = audit or AuditLogger(settings)
         self.checker = checker or self._default_checker()
         self.data_errors = data_errors or DataErrorRepository(settings)
+        self.calendar = calendar or TradingCalendar(settings, self.db, self.audit)
+        self.symbols = symbols or SymbolRegistry(settings, self.db, self.audit)
         self._market_re = re.compile(settings.market_from_filename_regex) if settings.market_from_filename_regex else None
+        self._date_re = re.compile(settings.date_from_filename_regex) if settings.date_from_filename_regex else None
+        # per-market ticker registries, alive for the duration of one run() only
+        self._known: dict[str | None, KnownTickers] | None = None
 
     def _default_checker(self) -> DataQualityChecker:
         checker = DataQualityChecker()
@@ -179,10 +318,39 @@ class StageLoader:
                     return m.group(1).upper()
         return self.settings.default_market
 
+    def derive_trade_date(self, path: Path) -> date | None:
+        """The trade date in the file name (``NASDAQ_20250123.txt`` -> 2025-01-23), or None."""
+        if not self._date_re:
+            return None
+        m = self._date_re.search(path.name)
+        if not m:
+            return None
+        try:
+            text = m.group("date")
+        except IndexError:
+            text = m.group(1) if m.groups() else m.group(0)
+        try:
+            return datetime.strptime(text, formats.DEFAULT_DATE_FORMAT).date()
+        except ValueError:
+            try:
+                return date.fromisoformat(text)
+            except ValueError:
+                return None
+
     # ------------------------------------------------------------------
     def run(self, files: Iterable[Path] | None = None, market: str | None = None,
-            truncate: bool | None = None, move_files: bool = True) -> list[LoadResult]:
-        """Load every pending file (or the given files). Returns one result per file."""
+            truncate: bool | None = None, move_files: bool = True,
+            stop_on_error: bool = False,
+            progress: Callable[[LoadResult], None] | None = None,
+            include_no_trading_days: bool = False) -> list[LoadResult]:
+        """Load every pending file (or the given files). Returns one result per file.
+
+        ``progress`` is called with each :class:`LoadResult` as soon as the file
+        is done (the CLI prints them while a long run is going on).  With
+        ``stop_on_error`` the run stops after the first failed file.  Files
+        dated on a no-trading day of their market are skipped unless
+        ``include_no_trading_days`` is set.
+        """
         self.settings.ensure_folders()
         targets = [Path(f) for f in files] if files is not None else self.pending_files()
         if not targets:
@@ -193,20 +361,142 @@ class StageLoader:
         self.db.ensure_history_table()
         do_truncate = self.settings.truncate_before_load if truncate is None else truncate
         results: list[LoadResult] = []
-        for i, path in enumerate(targets):
-            # truncating applies once per run, before the first file
-            res = self.load_file(path, market=market, truncate=(do_truncate and i == 0), move_file_after=move_files)
-            results.append(res)
+        self._known = {}          # known tickers: one scan per market per run, then maintained
+        try:
+            for i, path in enumerate(targets):
+                # truncating applies once per run, before the first file
+                res = self.load_file(path, market=market, truncate=(do_truncate and i == 0),
+                                     move_file_after=move_files, include_no_trading_days=include_no_trading_days)
+                results.append(res)
+                if progress is not None:
+                    progress(res)
+                if res.failed and stop_on_error:
+                    log.warning("stopping after the first failure (%s) - %d file(s) not loaded",
+                                path.name, len(targets) - i - 1)
+                    break
+        finally:
+            self._known = None
         loaded = sum(1 for r in results if r.ok)
-        failed = len(results) - loaded
-        log.info("run complete: %d file(s) loaded, %d failed", loaded, failed)
-        self.audit.log(COMPONENT, "run_complete", f"{loaded} file(s) loaded, {failed} failed",
+        skipped = sum(1 for r in results if r.skipped)
+        failed = len(results) - loaded - skipped
+        log.info("run complete: %d file(s) loaded, %d failed, %d skipped", loaded, failed, skipped)
+        self.audit.log(COMPONENT, "run_complete", f"{loaded} file(s) loaded, {failed} failed, {skipped} skipped",
                        level="INFO" if not failed else "WARNING",
-                       details={"loaded": loaded, "failed": failed})
+                       details={"loaded": loaded, "failed": failed, "skipped": skipped})
         return results
 
+    # -- bulk loading a folder -------------------------------------------
+    def find_files(self, folder: Path | str, patterns: Iterable[str] | None = None,
+                   recursive: bool = False) -> list[Path]:
+        """Files in *folder* matching *patterns* (default: the configured
+        ``file_patterns``), sorted by name - i.e. by trade date for
+        ``<MARKET>_<YYYYMMDD>.txt`` deliveries.  Raises :class:`LoadError` if the
+        folder is missing, is not a folder or cannot be read."""
+        folder = Path(folder).expanduser()
+        if not folder.exists():
+            raise LoadError(f"folder not found: {folder}")
+        if not folder.is_dir():
+            raise LoadError(f"not a folder: {folder}")
+        patterns = tuple(p.strip() for p in (patterns or self.settings.file_patterns) if p and p.strip())
+        if not patterns:
+            raise LoadError("no file pattern given (e.g. *.txt)")
+        found: dict[Path, None] = {}
+        try:
+            for pattern in patterns:
+                matches = folder.rglob(pattern) if recursive else folder.glob(pattern)
+                for p in matches:
+                    try:
+                        if p.is_file() and not p.name.startswith("."):
+                            found[p] = None
+                    except OSError:  # pragma: no cover - vanished/unreadable entry
+                        continue
+        except OSError as exc:
+            raise LoadError(f"cannot read folder {folder}: {exc}") from exc
+        return sorted(found, key=lambda p: (str(p.parent), p.name))
+
+    def load_folder(self, folder: Path | str, patterns: Iterable[str] | None = None,
+                    recursive: bool = False, market: str | None = None, move_files: bool = False,
+                    truncate: bool = False, stop_on_error: bool = False,
+                    progress: Callable[[LoadResult], None] | None = None,
+                    include_no_trading_days: bool = False) -> FolderLoadResult:
+        """Bulk load: every matching file in *folder* (default ``*.txt``), one
+        load/transaction per file, files sorted by name.
+
+        Files are left in place by default (``move_files=True`` archives /
+        quarantines them like a loading-folder run).  A broken file never stops
+        the others unless ``stop_on_error`` is set; every failure is recorded
+        in ``App_Error`` / ``Load_History`` and listed in the returned
+        :class:`FolderLoadResult`.  A folder-level problem (missing folder,
+        unusable database) raises :class:`LoadError` / :class:`DatabaseError`
+        after being recorded in ``App_Error``; a keyboard interrupt ends the run
+        cleanly (the current file is rolled back) with status ``interrupted``.
+        """
+        folder = Path(folder).expanduser()
+        summary = FolderLoadResult(folder=folder)
+        log.info("bulk load of folder %s (patterns=%s, recursive=%s)", folder,
+                 ",".join(patterns or self.settings.file_patterns), recursive)
+        try:
+            summary.files = self.find_files(folder, patterns, recursive)
+        except LoadError as exc:
+            summary.status = "failed"
+            summary.message = str(exc)
+            summary.finished = datetime.now()
+            self.audit.error(COMPONENT, "bulk_load_folder", exc, details={"folder": str(folder)})
+            self.audit.log(COMPONENT, "bulk_load_failed", str(exc), level="ERROR",
+                           details={"folder": str(folder)})
+            exc._audit_recorded = True  # type: ignore[attr-defined]
+            raise
+        self.audit.log(COMPONENT, "bulk_load_started",
+                       f"{len(summary.files)} file(s) in {folder}", details={
+                           "folder": str(folder), "files": len(summary.files), "recursive": recursive,
+                           "move_files": move_files, "stop_on_error": stop_on_error, "market": market})
+        if not summary.files:
+            summary.status = "completed"
+            summary.message = f"no files matching {';'.join(patterns or self.settings.file_patterns)} in {folder}"
+            summary.finished = datetime.now()
+            log.info("%s", summary.message)
+            self.audit.log(COMPONENT, "bulk_load_complete", summary.message, details={"folder": str(folder)})
+            return summary
+        def on_result(res: LoadResult) -> None:
+            summary.results.append(res)      # collected as they come (kept if interrupted)
+            if progress is not None:
+                progress(res)
+
+        try:
+            self.run(files=summary.files, market=market, truncate=truncate, move_files=move_files,
+                     stop_on_error=stop_on_error, progress=on_result,
+                     include_no_trading_days=include_no_trading_days)
+            summary.status = "stopped" if summary.not_attempted else "completed"
+            if summary.status == "stopped":
+                summary.message = (f"stopped after the first failure ({summary.failures[0].source_file.name}) - "
+                                   f"{summary.not_attempted} file(s) not attempted")
+        except KeyboardInterrupt:
+            summary.status = "interrupted"
+            summary.message = (f"interrupted after {len(summary.results)} of {len(summary.files)} file(s) - "
+                               f"the file being loaded was rolled back")
+            log.warning("bulk load of %s %s", folder, summary.message)
+        except Exception as exc:  # noqa: BLE001 - a folder-level problem (e.g. database unusable)
+            summary.status = "failed"
+            summary.message = str(exc)
+            self.audit.error(COMPONENT, "bulk_load_folder", exc, details={"folder": str(folder),
+                             "files_done": len(summary.results)})
+            self.audit.log(COMPONENT, "bulk_load_failed", str(exc), level="ERROR",
+                           details={"folder": str(folder), "files_done": len(summary.results)})
+            try:
+                exc._audit_recorded = True  # type: ignore[attr-defined]
+            except Exception:  # pragma: no cover - exceptions without __dict__
+                pass
+            raise
+        finally:
+            summary.finished = datetime.now()
+        log.info("%s", summary)
+        self.audit.log(COMPONENT, "bulk_load_complete", str(summary),
+                       level="INFO" if summary.status == "completed" and not summary.failed else "WARNING",
+                       details=summary.as_dict())
+        return summary
+
     def load_file(self, path: Path, market: str | None = None, truncate: bool = False,
-                  move_file_after: bool = True) -> LoadResult:
+                  move_file_after: bool = True, include_no_trading_days: bool = False) -> LoadResult:
         path = Path(path)
         result = LoadResult(source_file=path, load_id=uuid.uuid4().hex)
         step = "start"
@@ -219,6 +509,16 @@ class StageLoader:
                 raise LoadError(f"file not found: {path}")
             result.file_hash = file_sha256(path)
             result.market = self.derive_market(path, market)
+            result.trade_date = self.derive_trade_date(path)
+
+            # -- step 1b: a delivery for a day the market was closed? ----------
+            step = "trading_day_check"
+            if (result.trade_date is not None and self.settings.skip_no_trading_days
+                    and not include_no_trading_days):
+                reason = self.calendar.closure_reason(result.market or None, result.trade_date)
+                if reason:
+                    self._skip_file(path, result, reason, move_file_after)
+                    return result
 
             # -- step 2: was this file loaded before? -----------------------
             step = "previous_load_check"
@@ -236,6 +536,19 @@ class StageLoader:
                                details={"previous_load_id": previous.load_id,
                                         "previous_hash": previous.file_hash,
                                         "file_hash": result.file_hash, "content": same})
+
+            twins = self.db.find_loaded_by_hash(result.file_hash, exclude_file_name=path.name)
+            if twins:
+                # same content under another name: loaded anyway (it is a different
+                # delivery as far as the loading contract goes) but worth a warning -
+                # the rows will exist twice in staging, once per source file
+                names = ", ".join(sorted({t.file_name for t in twins}))
+                log.warning("%s has exactly the same content as %s (already loaded)", path.name, names)
+                self.audit.log(COMPONENT, "duplicate_content",
+                               f"identical content already loaded as {names} - loading anyway, the rows "
+                               f"will exist once per source file", level="WARNING",
+                               file_name=path.name, load_id=result.load_id,
+                               details={"duplicates": names, "file_hash": result.file_hash})
 
             # -- step 3: delete previous rows + insert the new ones in ONE transaction
             step = "replace_rows" if previous is not None else "insert_rows"
@@ -266,16 +579,25 @@ class StageLoader:
                                         rows_loaded=result.rows_loaded, market=result.market,
                                         file_size=path.stat().st_size)
 
-            # -- step 5: data quality checks --------------------------------
+            # -- step 5: symbol registry + data quality checks ----------------
+            step = "register_symbols"
+            result.new_symbols = self._register_symbols(result, data_rows)
             step = "quality_check"
             self._run_quality_checks(path, result, data_rows)
 
             # -- step 6: archive the file -----------------------------------
             step = "archive_file"
+            result.final_path = path
             if move_file_after:
-                result.final_path = move_file(path, self.settings.archive_dir)
-            else:
-                result.final_path = path
+                try:
+                    result.final_path = move_file(path, self.settings.archive_dir)
+                except OSError as exc:
+                    # the rows are committed and registered - a file that cannot be moved
+                    # (e.g. open in another program on Windows) does not undo the load
+                    result.message = f"loaded, but the file could not be moved to the archive folder: {exc}"
+                    log.warning("%s: %s", path.name, result.message)
+                    self.audit.log(COMPONENT, "archive_failed", result.message, level="WARNING",
+                                   file_name=path.name, load_id=result.load_id)
             if result.rejects:
                 self._write_reject_report(path.name, result)
             log.info("%s", result)
@@ -300,6 +622,30 @@ class StageLoader:
         return result
 
     # ------------------------------------------------------------------
+    def _skip_file(self, path: Path, result: LoadResult, reason: str, move_file_after: bool) -> None:
+        """The file is dated on a no-trading day of its market: warn, register, move aside."""
+        result.status = "skipped"
+        day = result.trade_date.isoformat() if result.trade_date else "?"
+        who = result.market or "the market"
+        result.message = f"{who} was closed on {day} ({reason}) - no trading day, file not loaded"
+        log.warning("%s skipped: %s", path.name, result.message)
+        self.audit.log(COMPONENT, "file_skipped", result.message, level="WARNING", file_name=path.name,
+                       load_id=result.load_id,
+                       details={"market": result.market, "trade_date": day, "reason": reason,
+                                "file_hash": result.file_hash})
+        try:
+            self.db.record_load_history(path.name, result.file_hash, result.load_id, HISTORY_SKIPPED,
+                                        market=result.market, message=result.message,
+                                        file_size=path.stat().st_size)
+        except Exception:  # pragma: no cover - bookkeeping must not break the run
+            log.exception("could not record the skipped file %s", path.name)
+        result.final_path = path
+        if move_file_after:
+            try:
+                result.final_path = move_file(path, self.settings.skipped_dir)
+            except OSError as exc:
+                log.warning("%s could not be moved to the skipped folder: %s", path.name, exc)
+
     def _handle_failure(self, path: Path, result: LoadResult, step: str, exc: Exception,
                         move_file_after: bool) -> None:
         result.status = "failed"
@@ -322,7 +668,11 @@ class StageLoader:
         except Exception:  # pragma: no cover - bookkeeping must not mask the load error
             log.exception("could not record failure details for %s", path.name)
         if path.is_file() and move_file_after:
-            result.final_path = move_file(path, self.settings.error_dir)
+            try:
+                result.final_path = move_file(path, self.settings.error_dir)
+            except OSError as move_exc:   # leave it where it is; the report still goes to the error folder
+                log.warning("%s could not be moved to the error folder: %s", path.name, move_exc)
+                result.final_path = path
             self._write_error_report(result)
 
     # ------------------------------------------------------------------
@@ -358,14 +708,45 @@ class StageLoader:
                 yield StageRow(result.market, ticker, date, open_, high, low, close, vol,
                                path.name, result.load_id, loaded_at)
 
+    # -- symbol registry -------------------------------------------------
+    def _register_symbols(self, result: LoadResult, data_rows: list[DataRow]) -> int:
+        """Every ticker of the load goes into Stock_Symbol (new ones without trade
+        dates); FirstSeen / LastSeen are widened to the dates loaded."""
+        seen: dict[str, tuple[str, str]] = {}
+        for row in data_rows:
+            if not row.ticker or len(row.trade_date) != 8 or not row.trade_date.isdigit():
+                continue
+            first, last = seen.get(row.ticker, (row.trade_date, row.trade_date))
+            seen[row.ticker] = (min(first, row.trade_date), max(last, row.trade_date))
+        new = self.symbols.register_seen(result.market or None, seen)
+        if new:
+            log.info("%s: %d symbol(s) seen for the first time", result.source_file.name, new)
+        return new
+
     # -- data quality ----------------------------------------------------
-    def _quality_context(self, path: Path, result: LoadResult) -> QualityContext:
-        expected = self.db.distinct_tickers(market=result.market or None,
-                                            exclude_source_file=path.name)
+    def _expected_tickers(self, path: Path, result: LoadResult, data_rows: list[DataRow]) -> frozenset[str]:
+        """Tickers known from other files of the market (for the missing-market-day rule)."""
+        if self._known is None:            # single load_file() call: ask the database
+            return self.db.distinct_tickers(market=result.market or None, exclude_source_file=path.name)
+        key = result.market or None
+        registry = self._known.get(key)
+        if registry is None:
+            # first file of the run for this market: one scan (already includes this file's rows)
+            registry = self._known[key] = KnownTickers(self.db.tickers_by_source(key))
+        else:
+            registry.replace_file(path.name, (r.ticker for r in data_rows))
+        return registry.expected_for(path.name)
+
+    def _quality_context(self, path: Path, result: LoadResult, data_rows: list[DataRow]) -> QualityContext:
+        expected = self._expected_tickers(path, result, data_rows)
         holidays = frozenset(market_calendar.parse_holiday(h)
                              for h in self.settings.extra_market_holidays)
+        # the market's No_Trading_Day table decides which days count as market-open,
+        # the Stock_Symbol table which stocks are expected on a day (their trading window)
         return QualityContext(market=result.market, source_file=path.name, load_id=result.load_id,
-                              expected_tickers=expected, extra_holidays=holidays)
+                              expected_tickers=expected, extra_holidays=holidays,
+                              market_open=self.calendar.opener(result.market or None),
+                              trading_windows=self.symbols.trading_windows(result.market or None))
 
     def _reject_issues(self, result: LoadResult) -> list[QualityIssue]:
         """Rows the loader rejected are data errors too - track every one."""
@@ -382,7 +763,7 @@ class StageLoader:
         """Run the validation strategies; persist findings in Data_Error."""
         issues: list[QualityIssue] = self._reject_issues(result)
         if self.settings.quality_checks_enabled:
-            context = self._quality_context(path, result)
+            context = self._quality_context(path, result, data_rows)
             # rejected rows never made it into the load - they must not count
             # as valid coverage for the missing-market-day rule
             for issue in issues:
@@ -402,13 +783,21 @@ class StageLoader:
                        level="WARNING", file_name=path.name, load_id=result.load_id,
                        details={"data_errors": result.data_errors, "alerts": result.alerts,
                                 "rules": sorted({i.rule for i in issues})})
+        alerts = []
         for issue in issues:
             if issue.alert:
-                log.warning("ALERT %s: %s", path.name, issue)
-                self.audit.log(COMPONENT, "data_alert", str(issue), level="ALERT",
-                               file_name=path.name, load_id=result.load_id,
-                               details={"ticker": issue.ticker, "trade_date": issue.trade_date,
-                                        "rule": issue.rule})
+                log.info("ALERT %s: %s", path.name, issue)
+                alerts.append({"event": "data_alert", "message": str(issue), "level": "ALERT",
+                               "file_name": path.name, "load_id": result.load_id,
+                               "details": {"ticker": issue.ticker, "trade_date": issue.trade_date,
+                                           "rule": issue.rule}})
+        if alerts:
+            # one line per file on the console (a bulk load of a year raises tens of
+            # thousands of alerts - every one is in the log file and in App_Log), and
+            # one ALERT entry per finding, written in a single transaction
+            log.warning("ALERT %s: %d alert(s) - %s", path.name, len(alerts),
+                        "; ".join(a["message"] for a in alerts[:3]) + (" ..." if len(alerts) > 3 else ""))
+            self.audit.log_many(COMPONENT, alerts)
 
     def _record_reject_data_errors(self, file_name: str, result: LoadResult) -> None:
         issues = self._reject_issues(result)

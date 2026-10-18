@@ -293,10 +293,10 @@ class QualityRepoEdgeTests(TempProjectTestCase):
     def test_strategies_property_is_a_copy(self):
         checker = DataQualityChecker()
         snapshot = checker.strategies
-        self.assertEqual(len(snapshot), 4)
+        self.assertEqual(len(snapshot), 6)
         checker.remove_strategy("high_above_low")
-        self.assertEqual(len(snapshot), 4)          # tuple snapshot unchanged
-        self.assertEqual(len(checker.strategies), 3)
+        self.assertEqual(len(snapshot), 6)          # tuple snapshot unchanged
+        self.assertEqual(len(checker.strategies), 5)
 
 
 class LoaderEdgeTests(TempProjectTestCase):

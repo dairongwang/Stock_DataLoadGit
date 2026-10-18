@@ -1,5 +1,7 @@
 -- Support tables of stock_dataload (created automatically by the app /
 -- `python -m stock_dataload init-db`; kept here for reference).
+-- The active tables (Stock_Daily / Stock_Weekly / Stock_Monthly) and
+-- Promotion_History are in create_stock_active_tables_sqlite.sql.
 
 -- Registry of every load attempt. The content hash (sha-256) makes
 -- re-loads idempotent: a file whose exact content was already loaded
@@ -47,7 +49,8 @@ CREATE TABLE IF NOT EXISTS "App_Error" (
 );
 CREATE INDEX IF NOT EXISTS "IX_App_Error_OccurredAt" ON "App_Error" ("OccurredAt");
 
--- Data quality findings of the strategy-based checks (quality.py).
+-- Data quality findings of the strategy-based checks (quality.py) and the
+-- rows rejected by the promotion to the daily table (promotion.py).
 -- Alert = 1 marks alert-level findings, e.g. a known stock with no valid
 -- data for a day the market was open.
 CREATE TABLE IF NOT EXISTS "Data_Error" (
@@ -70,6 +73,7 @@ CREATE TABLE IF NOT EXISTS "Data_Error" (
     "ResolutionNote" TEXT
 );
 CREATE INDEX IF NOT EXISTS "IX_Data_Error_SourceFile" ON "Data_Error" ("SourceFile");
+CREATE INDEX IF NOT EXISTS "IX_Data_Error_Ticker_TradeDate" ON "Data_Error" ("Ticker", "TradeDate");
 
 -- Corrections made on the dashboard's data correction page: one row per
 -- changed column (old / new value), linked to the staging row and, when

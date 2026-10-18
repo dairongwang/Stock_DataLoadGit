@@ -100,8 +100,8 @@ class LoaderTests(TempProjectTestCase):
         self.assertIn("line,reason,data", report.read_text())
 
     def test_empty_and_header_only_files_fail(self):
-        self.write("loading/A_20250101.txt", "")
-        self.write("loading/B_20250101.txt", DEFAULT_HEADER)
+        self.write("loading/A_20250107.txt", "")
+        self.write("loading/B_20250107.txt", DEFAULT_HEADER)
         results = self.loader.run()
         self.assertEqual([r.status for r in results], ["failed", "failed"])
         self.assertIn("empty", results[0].message)

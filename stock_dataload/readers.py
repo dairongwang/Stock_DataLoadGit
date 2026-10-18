@@ -12,10 +12,10 @@ import csv
 import json
 import logging
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from .file_formats import FileFormat
 
@@ -44,6 +44,25 @@ class SourceTable:
     rows: Iterator[list[str]]
     delimiter: str | None = None       # only for delimited files
     detail: str = ""                   # human readable note (sheet name, record path, ...)
+    #: releases the underlying file / workbook (set by readers that keep one open)
+    closer: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+
+    def close(self) -> None:
+        """Release the source file - whether or not any rows were read.
+
+        Closing an *unstarted* generator does not run its ``finally`` block,
+        so a file opened by a reader would otherwise stay open until garbage
+        collection; on Windows an open file can neither be moved nor deleted.
+        Safe to call more than once.
+        """
+        if hasattr(self.rows, "close"):
+            self.rows.close()
+        closer, self.closer = self.closer, None
+        if closer is not None:
+            try:
+                closer()
+            except Exception:  # pragma: no cover - already closed / broken handle
+                log.debug("closing the source of a %s table failed", self.file_type, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +204,8 @@ def read_delimited(path: Path, fmt: FileFormat) -> SourceTable:
             finally:
                 fh.close()
         del pos
-        return SourceTable("csv" if delimiter == "," else "text", header, rows(), delimiter=delimiter)
+        return SourceTable("csv" if delimiter == "," else "text", header, rows(), delimiter=delimiter,
+                           closer=fh.close)
     except Exception:
         fh.close()
         raise
@@ -242,7 +262,7 @@ def read_excel(path: Path, fmt: FileFormat) -> SourceTable:
         finally:
             wb.close()
 
-    return SourceTable("excel", header, rows(), detail=f"sheet '{ws.title}'")
+    return SourceTable("excel", header, rows(), detail=f"sheet '{ws.title}'", closer=wb.close)
 
 
 # ---------------------------------------------------------------------------

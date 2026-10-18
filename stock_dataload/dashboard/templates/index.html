@@ -93,6 +93,7 @@ Files in other layouts or types ({{ supported }}) go to the <b>conversion folder
     <form method="post" action="{{ url_for('load') }}" class="inline" style="margin-left:auto">
       <input type="text" name="market" placeholder="market (optional)" style="width:150px">
       <label title="empty the staging table before loading"><input type="checkbox" name="truncate"> truncate first</label>
+      <label title="files dated on a weekend / holiday are normally skipped (see Trading calendar)"><input type="checkbox" name="include_no_trading_days"> load no-trading days too</label>
       <button type="submit" class="small" {% if not loading_files %}disabled{% endif %}>Load all</button>
     </form>
   </div>
@@ -118,6 +119,45 @@ Files in other layouts or types ({{ supported }}) go to the <b>conversion folder
 
 <div class="grid2">
   <div class="card">
+    <h2>Bulk load a folder</h2>
+    <p class="muted">Load every default-format file of a folder on this machine (e.g. a year of daily deliveries) into the staging table - one load per file, sorted by name; files stay where they are.</p>
+    <form method="post" action="{{ url_for('load_folder') }}">
+      <div class="form-grid" style="grid-template-columns:110px 1fr">
+        <label>Folder</label><input type="text" name="folder" placeholder="e.g. {{ settings.base_dir.parent }}/NASDAQ_2023" required>
+        <label>Patterns</label><input type="text" name="patterns" value="{{ settings.file_patterns|join(';') }}" style="width:200px">
+        <label>Market</label><input type="text" name="market" placeholder="optional (default: from file name)" style="width:200px">
+        <label>Options</label><span>
+          <label><input type="checkbox" name="recursive"> include sub-folders</label>
+          <label><input type="checkbox" name="move"> move files to archive / error afterwards</label><br>
+          <label><input type="checkbox" name="stop_on_error"> stop at the first failed file</label>
+          <label title="empty the staging table before the first file"><input type="checkbox" name="truncate"> truncate first</label><br>
+          <label title="files dated on a weekend / holiday are normally skipped (see Trading calendar)"><input type="checkbox" name="include_no_trading_days"> load files dated on no-trading days too</label></span>
+      </div>
+      <div class="actions"><button type="submit" class="small">Load folder</button></div>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Active tables <a class="btn small secondary" style="float:right" href="{{ url_for('promote') }}">promote &#8594;</a></h2>
+    {% if active %}
+    <table>
+      <tr><th>Table</th><th class="num">Rows</th><th class="num">Stocks</th><th>Period</th><th>Last promotion</th></tr>
+      {% for t in active %}
+      <tr>
+        <td><a href="{{ url_for('active_table', kind=t.kind) }}" class="mono">{{ t.table }}</a> <span class="muted">{{ t.kind }}</span></td>
+        <td class="num">{{ '{:,}'.format(t.rows) }}</td>
+        <td class="num">{{ '{:,}'.format(t.tickers) }}</td>
+        <td class="muted">{% if t.rows %}{{ t.first_period }} .. {{ t.last_period }}{% endif %}</td>
+        <td>{% if t.last_run %}<span class="badge {{ 'ok' if t.last_run.status == 'completed' else 'err' }}">{{ t.last_run.status }}</span> <span class="muted">{{ t.last_run.started_at }}</span>{% else %}<span class="muted">never</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">Active tables unavailable.</p>{% endif %}
+    <p class="muted" style="margin-bottom:0">Staging rows are validated and promoted into the daily table, which feeds the weekly and monthly tables.</p>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
     <h2>Recent loads</h2>
     {% if loads %}
     <table>
@@ -127,8 +167,8 @@ Files in other layouts or types ({{ supported }}) go to the <b>conversion folder
       {% endfor %}
     </table>
     {% else %}<p class="muted">Nothing loaded yet.</p>{% endif %}
-    <p class="muted" style="margin-bottom:0">Archive: {{ archive_count }} loaded file(s) &middot; Converted sources: {{ converted_count }}
-      &middot; <a href="{{ url_for('browse', key='archive_dir') }}">browse archive</a> &middot; <a href="{{ url_for('browse', key='converted_dir') }}">browse converted</a></p>
+    <p class="muted" style="margin-bottom:0">Archive: {{ archive_count }} loaded file(s) &middot; Skipped (no trading day): {{ skipped_count }} &middot; Converted sources: {{ converted_count }}
+      &middot; <a href="{{ url_for('browse', key='archive_dir') }}">browse archive</a> &middot; <a href="{{ url_for('browse', key='skipped_dir') }}">browse skipped</a> &middot; <a href="{{ url_for('browse', key='converted_dir') }}">browse converted</a></p>
   </div>
   <div class="card">
     <h2>Errors <span class="badge {{ 'err' if error_files else '' }}">{{ error_files|length }}</span></h2>

@@ -176,10 +176,12 @@ class DataQualityCheckerTests(unittest.TestCase):
     def test_default_strategy_set(self):
         checker = DataQualityChecker()
         self.assertEqual(checker.strategy_names(),
-                         ["date_is_valid", "numeric_columns", "high_above_low", "missing_market_day"])
+                         ["date_is_valid", "numeric_columns", "high_above_low", "before_first_trade_date",
+                          "after_last_trade_date", "missing_market_day"])
+        from stock_dataload.quality import AfterLastTradeDateStrategy, BeforeFirstTradeDateStrategy
         self.assertEqual([type(s) for s in default_strategies()],
                          [DateIsValidStrategy, NumericColumnsStrategy, HighAboveLowStrategy,
-                          MissingMarketDayStrategy])
+                          BeforeFirstTradeDateStrategy, AfterLastTradeDateStrategy, MissingMarketDayStrategy])
 
     def test_add_and_remove_strategy(self):
         class VolumeCapStrategy(RowValidationStrategy):

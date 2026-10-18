@@ -4,6 +4,11 @@ Command line interface.
     python -m stock_dataload dashboard            # web dashboard for business users
     python -m stock_dataload load                 # load every file in the loading folder
     python -m stock_dataload load FILE [FILE..]   # load specific file(s)
+    python -m stock_dataload load-folder FOLDER   # bulk load: every file in a folder
+    python -m stock_dataload promote daily        # staging -> active daily table (validated)
+    python -m stock_dataload promote weekly       # daily -> weekly table; also: monthly, all
+    python -m stock_dataload no-trading-days update   # generate next year's No_Trading_Day rows (weekends + holidays)
+    python -m stock_dataload symbols set HCMAU --first-trade-date 2025-08-01   # Stock_Symbol table (trading windows)
     python -m stock_dataload convert SOURCE [..]  # convert (csv/text/xlsx/json/xml) + move to loading folder
     python -m stock_dataload convert-folder       # convert everything in the conversion folder
     python -m stock_dataload inspect SOURCE       # show how a file would be mapped
@@ -17,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 
 from . import __version__, formats
@@ -27,9 +33,12 @@ from .converter import ConversionError, FileConverter
 from .correction import CorrectionService
 from .db import DatabaseError, StageDatabase
 from .file_formats import FILE_TYPES, FileFormat, FormatError, FormatStore
-from .loader import StageLoader
+from .loader import LoadError, StageLoader
 from .logging_setup import setup_logging
+from .promotion import PROC_DAILY, PROC_MONTHLY, PROC_WEEKLY, PromotionError, PromotionService
 from .quality import DataErrorRepository
+from .symbols import SymbolError, SymbolRegistry
+from .trading_calendar import RULE_SETS, CalendarError, TradingCalendar, default_update_years
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,6 +60,101 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--truncate", action="store_true", help="empty the staging table before loading")
     p.add_argument("--keep", action="store_true", help="do not move files to archive/error after loading")
     p.add_argument("--skip-bad-rows", action="store_true", help="skip invalid rows instead of failing the file")
+    p.add_argument("--include-no-trading-days", action="store_true",
+                   help="load files dated on a no-trading day too (default: skip them with a warning)")
+
+    # load-folder --------------------------------------------------------
+    p = sub.add_parser("load-folder", help="bulk load: every default-format file in a folder (files stay in place)")
+    p.add_argument("folder", type=Path, help="folder with default-format files, e.g. ../NASDAQ_2023")
+    p.add_argument("--pattern", action="append", dest="patterns", metavar="GLOB",
+                   help="file name pattern(s), repeatable (default: [loader] file_patterns, *.txt)")
+    p.add_argument("--recursive", action="store_true", help="include sub-folders")
+    p.add_argument("--market", help="Market value for all rows (default: derived from each file name)")
+    p.add_argument("--truncate", action="store_true", help="empty the staging table before the first file")
+    p.add_argument("--move", action="store_true",
+                   help="move files to the archive / error folder afterwards (default: leave them where they are)")
+    p.add_argument("--skip-bad-rows", action="store_true", help="skip invalid rows instead of failing the file")
+    p.add_argument("--stop-on-error", action="store_true", help="stop at the first file that fails (default: continue)")
+    p.add_argument("--promote", action="store_true",
+                   help="afterwards run promote daily, weekly and monthly (incremental)")
+    p.add_argument("--include-no-trading-days", action="store_true",
+                   help="load files dated on a no-trading day too (default: skip them with a warning)")
+
+    # no-trading-days ----------------------------------------------------
+    p = sub.add_parser("no-trading-days", aliases=["calendar"],
+                       help="the trading calendar: No_Trading_Day table (weekends + holidays per market)")
+    csub = p.add_subparsers(dest="calendar_command", required=True)
+    c = csub.add_parser("update", help="generate the no-trading days of a year (run before the year begins)")
+    c.add_argument("--year", type=int, action="append", dest="years", metavar="YYYY",
+                   help="year(s) to generate, repeatable (default: this year and next year)")
+    c.add_argument("--from", dest="year_from", type=int, metavar="YYYY", help="first year of a range")
+    c.add_argument("--to", dest="year_to", type=int, metavar="YYYY", help="last year of a range")
+    c.add_argument("--market", action="append", dest="markets", help="only this market (repeatable; default: all active)")
+    c = csub.add_parser("list", help="show the no-trading days of a market")
+    c.add_argument("market")
+    c.add_argument("--year", type=int, help="calendar year (default: this year)")
+    c.add_argument("--all", action="store_true", help="include weekends (default: holidays / closures only)")
+    c = csub.add_parser("check", help="is the market open on a date?")
+    c.add_argument("market")
+    c.add_argument("date", help="YYYY-MM-DD or YYYYMMDD")
+    c = csub.add_parser("add", help="add an ad-hoc closure (e.g. a day of mourning)")
+    c.add_argument("market")
+    c.add_argument("date", help="YYYY-MM-DD or YYYYMMDD")
+    c.add_argument("--reason", default="", help="why the market is closed")
+    c = csub.add_parser("remove", help="remove a closure - the market trades on that day")
+    c.add_argument("market")
+    c.add_argument("date", help="YYYY-MM-DD or YYYYMMDD")
+    csub.add_parser("markets", help="list the markets the calendar is kept for")
+    c = csub.add_parser("add-market", help="keep a calendar for another market")
+    c.add_argument("market", help="market code as used in file names, e.g. LSE")
+    c.add_argument("--name", default="", help="display name")
+    c.add_argument("--rules", choices=tuple(RULE_SETS), default="us",
+                   help="how its days are generated: us = weekends + US exchange holidays, weekends = weekends only")
+    for name, help_text in (("enable", "re-activate a market"), ("disable", "deactivate a market")):
+        c = csub.add_parser(name, help=help_text)
+        c.add_argument("market")
+
+    # symbols ------------------------------------------------------------
+    p = sub.add_parser("symbols", help="the stock symbol table: market, first / last trade date per symbol")
+    ssub = p.add_subparsers(dest="symbols_command", required=True)
+    c = ssub.add_parser("list", help="list symbols")
+    c.add_argument("--ticker", help="ticker prefix, e.g. HCM")
+    c.add_argument("--market")
+    c.add_argument("--missing-dates", action="store_true", help="only symbols without a first trade date (not checked for missing days)")
+    c.add_argument("--suspicious", action="store_true", help="only symbols with loaded data before their first trade date")
+    c.add_argument("--limit", type=int, default=100)
+    c = ssub.add_parser("show", help="show one symbol")
+    c.add_argument("ticker")
+    c.add_argument("--market")
+    c = ssub.add_parser("set", help="set the first / last trade date (and name) of a symbol; creates it if needed")
+    c.add_argument("ticker")
+    c.add_argument("--market", help="the market (needed if the symbol is new or exists on several markets)")
+    c.add_argument("--first-trade-date", dest="first", metavar="DATE", help="YYYY-MM-DD; '' clears it")
+    c.add_argument("--last-trade-date", dest="last", metavar="DATE", help="YYYY-MM-DD (delisting); '' clears it")
+    c.add_argument("--name")
+    c.add_argument("--note")
+    c = ssub.add_parser("delete", help="remove a symbol from the table")
+    c.add_argument("ticker")
+    c.add_argument("--market")
+    c = ssub.add_parser("import", help="load first / last trade dates from a CSV file (ticker, market, first_trade_date, last_trade_date, name)")
+    c.add_argument("file", type=Path)
+    c.add_argument("--market", help="market for rows without a market column")
+    c = ssub.add_parser("export", help="write the table as CSV (edit and import it again)")
+    c.add_argument("file", type=Path, nargs="?", help="output file (default: print)")
+    c.add_argument("--market")
+
+    # promote ------------------------------------------------------------
+    p = sub.add_parser("promote", help="promote data into the active tables (daily / weekly / monthly)")
+    p.add_argument("what", choices=("daily", "weekly", "monthly", "all"),
+                   help="daily: staging -> daily table (validated); weekly / monthly: daily -> aggregates; "
+                        "all: daily, then weekly, then monthly")
+    p.add_argument("--full", action="store_true",
+                   help="re-promote everything (default: only what changed since the last run)")
+    p.add_argument("--file", dest="source_file", help="daily: only the rows of this source file")
+    p.add_argument("--load-id", help="daily: only the rows of this load id")
+    p.add_argument("--ticker", help="only this stock symbol")
+    p.add_argument("--from", dest="date_from", metavar="DATE", help="daily: from this trade date (YYYYMMDD / YYYY-MM-DD)")
+    p.add_argument("--to", dest="date_to", metavar="DATE", help="daily: up to this trade date")
 
     # convert ------------------------------------------------------------
     p = sub.add_parser("convert", help="convert file(s) with a different layout to the default format")
@@ -81,8 +185,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("source", type=Path)
     _add_format_options(p)
 
-    sub.add_parser("init-db", help="create the staging/log/error/history tables if they do not exist")
-    sub.add_parser("status", help="show files loaded into the staging table")
+    sub.add_parser("init-db", help="create the staging / active / log / error / history tables if they do not exist")
+    sub.add_parser("status", help="show files loaded into the staging table and the active tables")
+    p = sub.add_parser("promotions", help="show the promotion run registry (Promotion_History table)")
+    p.add_argument("--limit", type=int, default=20, help="number of entries (default 20)")
+    p.add_argument("--procedure", choices=(PROC_DAILY, PROC_WEEKLY, PROC_MONTHLY), help="filter by procedure")
 
     # audit / quality ----------------------------------------------------
     p = sub.add_parser("logs", help="show the app activity log (App_Log table)")
@@ -205,14 +312,233 @@ def cmd_load(args, settings) -> int:
         settings.skip_bad_rows = True
     loader = StageLoader(settings)
     results = loader.run(files=args.files or None, market=args.market, truncate=args.truncate,
-                         move_files=not args.keep)
+                         move_files=not args.keep, progress=lambda r: print(r, flush=True),
+                         include_no_trading_days=args.include_no_trading_days)
     if not results:
         print(f"No files to load in {settings.loading_dir}")
         return 0
-    for r in results:
-        print(r)
+    skipped = [r for r in results if r.skipped]
+    if skipped:
+        print(f"{len(skipped)} file(s) skipped - dated on a no-trading day (see 'no-trading-days list'; "
+              f"--include-no-trading-days loads them anyway)")
     failed = [r for r in results if r.failed]
     return 1 if failed else 0
+
+
+def cmd_load_folder(args, settings) -> int:
+    if args.skip_bad_rows:
+        settings.skip_bad_rows = True
+    loader = StageLoader(settings)
+    try:
+        summary = loader.load_folder(args.folder, patterns=args.patterns or None, recursive=args.recursive,
+                                     market=args.market, move_files=args.move, truncate=args.truncate,
+                                     stop_on_error=args.stop_on_error, progress=lambda r: print(r, flush=True),
+                                     include_no_trading_days=args.include_no_trading_days)
+    except LoadError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(summary)
+    rc = 0 if summary.ok else 1
+    if summary.status == "interrupted":
+        return 130
+    if args.promote and summary.loaded:
+        rc = max(rc, _promote("all", PromotionService(settings), full=False))
+    return rc
+
+
+def cmd_no_trading_days(args, settings) -> int:
+    cal = TradingCalendar(settings)
+    try:
+        cmd = args.calendar_command
+        if cmd == "update":
+            years = list(args.years or [])
+            if args.year_from or args.year_to:
+                start = args.year_from or args.year_to
+                end = args.year_to or args.year_from
+                years += list(range(min(start, end), max(start, end) + 1))
+            years = sorted(set(years)) or default_update_years()
+            results = cal.update_years(years, args.markets)
+            for r in results:
+                print(r)
+            print(f"No_Trading_Day table updated for {', '.join(str(y) for y in years)} "
+                  f"({sum(r.added for r in results)} day(s) added)")
+            return 0
+        if cmd == "list":
+            year = args.year or date.today().year
+            if cal.get_market(args.market) is None:
+                print(f"ERROR: unknown market '{args.market}' - see 'no-trading-days markets'", file=sys.stderr)
+                return 1
+            rows = cal.days(args.market, year, holidays_only=not args.all)
+            if not rows:
+                print(f"no no-trading days recorded for {args.market.upper()} in {year} - run "
+                      f"'no-trading-days update --year {year}'")
+                return 0
+            print(f"{args.market.upper()} {year}: {len(rows)} no-trading day(s)"
+                  + ("" if args.all else " (weekends not shown, use --all)"))
+            for d in rows:
+                print(f"  {d.trade_date}  {d.weekday:<9} {d.reason:<45} {d.source}")
+            return 0
+        if cmd == "check":
+            from .trading_calendar import parse_day
+            day = parse_day(args.date)
+            reason = cal.closure_reason(args.market, day)
+            if reason:
+                print(f"{args.market.upper()} is CLOSED on {day.isoformat()} ({reason})")
+            else:
+                print(f"{args.market.upper()} is open on {day.isoformat()}")
+            return 0
+        if cmd == "add":
+            row = cal.add_day(args.market, args.date, args.reason)
+            print(f"{row.market} closed on {row.trade_date}: {row.reason}")
+            return 0
+        if cmd == "remove":
+            row = cal.remove_day(args.market, args.date)
+            print(f"{row.market} trades on {row.trade_date} ({row.reason} removed)")
+            return 0
+        if cmd == "markets":
+            print(f"{'Market':<10} {'Rules':<10} {'Active':<8} {'Years':<14} Name")
+            for m in cal.markets():
+                years = cal.years_available(m.market)
+                span = f"{years[0]}-{years[-1]}" if years else "-"
+                print(f"{m.market:<10} {m.rules:<10} {'yes' if m.is_active else 'no':<8} {span:<14} {m.name or ''}")
+            return 0
+        if cmd == "add-market":
+            m = cal.add_market(args.market, args.name, args.rules)
+            print(f"market {m.market} added ({RULE_SETS[m.rules]}); generate its days with "
+                  f"'no-trading-days update --market {m.market}'")
+            return 0
+        m = cal.set_market_active(args.market, args.calendar_command == "enable")
+        print(f"market {m.market} {'active' if m.is_active else 'inactive'}")
+        return 0
+    except CalendarError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_symbols(args, settings) -> int:
+    reg = SymbolRegistry(settings)
+    try:
+        cmd = args.symbols_command
+        if cmd == "list":
+            rows = reg.find(args.ticker, args.market, missing_dates=args.missing_dates, suspicious=args.suspicious,
+                            limit=args.limit)
+            counts = reg.counts(args.market)
+            if not rows:
+                print("no symbols match")
+            else:
+                print(f"{'Ticker':<10} {'Market':<8} {'First trade':<12} {'Last trade':<12} {'First seen':<12} "
+                      f"{'Last seen':<12} {'Source':<8} Name")
+                for s in rows:
+                    flag = " !" if s.data_before_listing else ""
+                    print(f"{s.ticker:<10} {s.market:<8} {s.first_trade_date or '-':<12} {s.last_trade_date or '-':<12} "
+                          f"{s.first_seen or '-':<12} {s.last_seen or '-':<12} {s.source:<8} {s.name or ''}{flag}")
+            print(f"{counts['symbols']} symbol(s), {counts['with_first_trade_date']} with a first trade date "
+                  f"(checked for missing days), {counts['without_first_trade_date']} without, "
+                  f"{counts['data_before_listing']} with data before their first trade date (!)")
+            return 0
+        if cmd == "show":
+            s = reg.get(args.ticker, args.market)
+            if s is None:
+                print(f"ERROR: unknown symbol {args.ticker}", file=sys.stderr)
+                return 1
+            for label, value in (("ticker", s.ticker), ("market", s.market or "-"), ("name", s.name or "-"),
+                                 ("first trade date", s.first_trade_date or "- (missing-day check skipped)"),
+                                 ("last trade date", s.last_trade_date or "- (still trading)"),
+                                 ("data loaded", f"{s.first_seen or '-'} .. {s.last_seen or '-'}"),
+                                 ("source", s.source), ("note", s.note or "-"), ("updated", s.updated_at)):
+                print(f"{label:<17}: {value}")
+            if s.data_before_listing:
+                print("! loaded data starts before the first trade date - that data is invalid")
+            return 0
+        if cmd == "set":
+            kwargs = {}
+            if args.first is not None:
+                kwargs["first_trade_date"] = args.first
+            if args.last is not None:
+                kwargs["last_trade_date"] = args.last
+            if args.name is not None:
+                kwargs["name"] = args.name
+            if args.note is not None:
+                kwargs["note"] = args.note
+            s = reg.set(args.ticker, args.market, **kwargs)
+            print(f"{s.ticker} ({s.market or 'no market'}): first trade {s.first_trade_date or '-'}, "
+                  f"last trade {s.last_trade_date or '-'}" + (f", {s.name}" if s.name else ""))
+            if s.data_before_listing:
+                print(f"! data loaded from {s.first_seen} is before the first trade date - it is invalid and will be "
+                      f"flagged / rejected")
+            return 0
+        if cmd == "delete":
+            s = reg.delete(args.ticker, args.market)
+            print(f"{s.ticker} ({s.market}) removed")
+            return 0
+        if cmd == "import":
+            result = reg.import_csv(args.file, args.market)
+            print(result)
+            for e in result.errors[:50]:
+                print(f"  {e}", file=sys.stderr)
+            return 1 if result.errors else 0
+        text = reg.export_csv(args.file, args.market)
+        if args.file:
+            print(f"{text.count(chr(10)) - 1} symbol(s) written to {args.file}")
+        else:
+            print(text, end="")
+        return 0
+    except SymbolError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+def _promote(what: str, service: PromotionService, full: bool = False, **filters) -> int:
+    """Run the procedure(s) in order, printing each result; 1 on failure."""
+    names = ("daily", "weekly", "monthly") if what == "all" else (what,)
+    try:
+        for name in names:
+            if name == "daily":
+                r = service.promote_daily(full=full, **filters)
+            elif name == "weekly":
+                r = service.promote_weekly(full=full, ticker=filters.get("ticker"))
+            else:
+                r = service.promote_monthly(full=full, ticker=filters.get("ticker"))
+            print(r, flush=True)
+            if r.rows_rejected:
+                print(f"  {r.rows_rejected:,} staging row(s) were rejected - see 'data-errors' / the dashboard's "
+                      f"data correction page, then promote again", flush=True)
+            if r.rows_incomplete:
+                print(f"  {r.rows_incomplete:,} {name} period(s) have a trading day missing - recorded in Data_Error "
+                      f"(data-errors --file {r.target_table}); load the missing days and promote again", flush=True)
+        return 0
+    except PromotionError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_promote(args, settings) -> int:
+    filters = {}
+    if args.what in ("daily", "all"):
+        filters = {"source_file": args.source_file, "load_id": args.load_id, "ticker": args.ticker,
+                   "date_from": args.date_from, "date_to": args.date_to}
+    elif args.ticker:
+        filters = {"ticker": args.ticker}
+    elif any((args.source_file, args.load_id, args.date_from, args.date_to)):
+        print("ERROR: --file, --load-id, --from and --to only apply to 'promote daily'", file=sys.stderr)
+        return 2
+    return _promote(args.what, PromotionService(settings), full=args.full, **filters)
+
+
+def cmd_promotions(args, settings) -> int:
+    records = PromotionService(settings).history(limit=args.limit, procedure=args.procedure)
+    if not records:
+        print("no promotion runs yet")
+        return 0
+    print(f"{'StartedAt':<20} {'Procedure':<16} {'Mode':<12} {'Status':<10} {'Read':>9} {'Ins':>8} {'Upd':>8} "
+          f"{'Same':>8} {'Rej':>7} {'Skip':>6} {'Incompl':>7}  Message")
+    for r in reversed(records):
+        mode = r.mode + ("*" if r.filtered else "")
+        print(f"{r.started_at:<20} {r.procedure:<16} {mode:<12} {r.status:<10} {r.rows_read:>9,} "
+              f"{r.rows_inserted:>8,} {r.rows_updated:>8,} {r.rows_unchanged:>8,} {r.rows_rejected:>7,} "
+              f"{r.rows_skipped:>6,} {r.rows_incomplete:>7,}  {r.message or ''}")
+    print("(* = run limited to a file / ticker / date range)")
+    return 0
 
 
 def cmd_convert(args, settings) -> int:
@@ -306,8 +632,17 @@ def cmd_init_db(args, settings) -> int:
     DataErrorRepository(settings).ensure_table()
     CorrectionService(settings, db).ensure_table()
     UserStore(settings).ensure_table()
+    PromotionService(settings, db).ensure_tables()
+    SymbolRegistry(settings, db).ensure_table()
+    calendar = TradingCalendar(settings, db)
+    years = default_update_years()
+    updated = calendar.update_years(years)
     print(f"staging table {settings.stage_table} is ready (sqlite: {settings.sqlite_path})")
-    print("support tables ready: Load_History, App_Log, App_Error, Data_Error, Data_Correction, App_User")
+    print(f"no-trading days ready for {', '.join(m.market for m in calendar.markets(active_only=True))} "
+          f"({years[0]}-{years[-1]}, {sum(r.added for r in updated)} day(s) added)")
+    print(f"active tables ready: {settings.daily_table}, {settings.weekly_table}, {settings.monthly_table}")
+    print("support tables ready: Load_History, App_Log, App_Error, Data_Error, Data_Correction, App_User, "
+          "Promotion_History, Stock_Symbol")
     return 0
 
 
@@ -375,13 +710,24 @@ def cmd_status(args, settings) -> int:
     print(f"files waiting to be loaded: {len(pending)}" + (" - " + ", ".join(p.name for p in pending) if pending else ""))
     if not rows:
         print("staging table is empty")
-        return 0
-    print(f"{'SourceFile':<40} {'LoadId':<32} {'Rows':>8}  LoadedAt")
-    total = 0
-    for src, load_id, n, at in rows:
-        print(f"{src:<40} {load_id:<32} {n:>8}  {at}")
-        total += n
-    print(f"{'total':<40} {'':<32} {total:>8}")
+    else:
+        print(f"{'SourceFile':<40} {'LoadId':<32} {'Rows':>8}  LoadedAt")
+        total = 0
+        for src, load_id, n, at in rows:
+            print(f"{src:<40} {load_id:<32} {n:>8}  {at}")
+            total += n
+        print(f"{'total':<40} {'':<32} {total:>8}")
+    counts = SymbolRegistry(settings, db).counts()
+    print(f"stock symbols: {counts['symbols']:,} ({counts['with_first_trade_date']:,} with a first trade date, "
+          f"{counts['without_first_trade_date']:,} without - not checked for missing days"
+          + (f", {counts['data_before_listing']} with data before their first trade date" if counts["data_before_listing"] else "")
+          + ")")
+    print("active tables:")
+    for t in PromotionService(settings, db).summaries():
+        span = f"{t.first_period} .. {t.last_period}" if t.rows else "empty"
+        last = (f"last {t.last_run.procedure} {t.last_run.status} {t.last_run.started_at}"
+                if t.last_run else "never promoted")
+        print(f"  {t.table:<16} {t.kind:<8} {t.rows:>10,} rows  {t.tickers:>6,} tickers  {span:<26} {last}")
     return 0
 
 
@@ -451,6 +797,12 @@ def cmd_user(args, settings) -> int:
 
 COMMANDS = {
     "load": cmd_load,
+    "load-folder": cmd_load_folder,
+    "promote": cmd_promote,
+    "promotions": cmd_promotions,
+    "no-trading-days": cmd_no_trading_days,
+    "calendar": cmd_no_trading_days,
+    "symbols": cmd_symbols,
     "user": cmd_user,
     "logs": cmd_logs,
     "errors": cmd_errors,
@@ -478,7 +830,7 @@ def main(argv: list[str] | None = None) -> int:
     audit = AuditLogger(settings)
     try:
         return COMMANDS[args.command](args, settings)
-    except (ConversionError, DatabaseError, ConfigError, FormatError) as exc:
+    except (ConversionError, DatabaseError, ConfigError, FormatError, LoadError, PromotionError) as exc:
         if not getattr(exc, "_audit_recorded", False):
             audit.error("cli", args.command, exc)
         print(f"ERROR: {exc}", file=sys.stderr)

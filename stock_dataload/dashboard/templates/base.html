@@ -12,6 +12,9 @@
   <nav>
     <a href="{{ url_for('index') }}" class="{{ 'active' if request.endpoint == 'index' }}">Overview</a>
     <a href="{{ url_for('formats_page') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('format') }}">File formats</a>
+    <a href="{{ url_for('promote') }}" class="{{ 'active' if request.endpoint in ('promote', 'promote_run', 'active_table') }}">Active tables</a>
+    <a href="{{ url_for('calendar_page') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('calendar') }}">Trading calendar</a>
+    <a href="{{ url_for('symbols_page') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('symbol') }}">Symbols</a>
     <a href="{{ url_for('monitor') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('monitor') }}">Monitoring</a>
     {% if can('operator') %}<a href="{{ url_for('correct') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('correct') }}">Data correction</a>{% endif %}
     {% if can('admin') %}<a href="{{ url_for('settings_page') }}" class="{{ 'active' if request.endpoint == 'settings_page' }}">Settings</a>

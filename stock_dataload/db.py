@@ -74,7 +74,9 @@ CREATE TABLE IF NOT EXISTS {table} (
 )
 """
 
-_INDEX = 'CREATE INDEX IF NOT EXISTS "IX_{name}_SourceFile" ON {table} ("SourceFile")'
+_INDEXES = (
+    'CREATE INDEX IF NOT EXISTS "IX_{name}_SourceFile" ON {table} ("SourceFile")',
+)
 
 #: Registry of every load attempt (file name, sha-256 content hash, outcome).
 #: Re-loading a file deletes its previous rows first, so only one copy of a
@@ -85,6 +87,7 @@ LOAD_HISTORY_TABLE = "Load_History"
 HISTORY_LOADED = "loaded"
 HISTORY_FAILED = "failed"
 HISTORY_REPLACED = "replaced"    # a later load of the same file superseded this one
+HISTORY_SKIPPED = "skipped"      # not loaded: dated on a no-trading day of its market
 
 _HISTORY_DDL = f"""
 CREATE TABLE IF NOT EXISTS "{LOAD_HISTORY_TABLE}" (
@@ -177,7 +180,9 @@ class StageDatabase:
         path = self.settings.sqlite_path
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(path), isolation_level="DEFERRED")
+            # a generous busy timeout: a promotion holds the write lock for a while and a
+            # concurrent load (or the other way round) should wait, not fail
+            conn = sqlite3.connect(str(path), isolation_level="DEFERRED", timeout=30.0)
             conn.execute("PRAGMA journal_mode=WAL")
             return conn
         except (OSError, sqlite3.Error) as exc:
@@ -208,7 +213,8 @@ class StageDatabase:
             return
         cur = conn.cursor()
         cur.execute(_DDL.format(table=self.table))
-        cur.execute(_INDEX.format(name=self.settings.stage_table, table=self.table))
+        for ddl in _INDEXES:
+            cur.execute(ddl.format(name=self.settings.stage_table, table=self.table))
         log.debug("staging table %s is ready", self.table)
 
     def ensure_history_table(self, conn: sqlite3.Connection | None = None) -> None:
@@ -268,6 +274,25 @@ class StageDatabase:
             (file_name, HISTORY_LOADED))
         row = cur.fetchone()
         return LoadHistoryRecord(*row) if row else None
+
+    def find_loaded_by_hash(self, file_hash: str, exclude_file_name: str | None = None,
+                            conn: sqlite3.Connection | None = None) -> list[LoadHistoryRecord]:
+        """Successful loads (still in the staging table) of files with exactly
+        this content - under a *different* name if *exclude_file_name* is given.
+        Lets the loader warn about the same delivery arriving twice under two names."""
+        if conn is None:
+            with self.connection() as c:
+                return self.find_loaded_by_hash(file_hash, exclude_file_name, c)
+        self.ensure_history_table(conn)
+        cols = ", ".join(self.q(c) for c in HISTORY_COLUMNS)
+        sql = (f'SELECT {cols} FROM "{LOAD_HISTORY_TABLE}" '
+               f'WHERE {self.q("FileHash")} = ? AND {self.q("Status")} = ?')
+        params: list = [file_hash, HISTORY_LOADED]
+        if exclude_file_name:
+            sql += f' AND {self.q("FileName")} <> ?'
+            params.append(exclude_file_name)
+        sql += f' ORDER BY {self.q("LoadHistoryId")} DESC'
+        return [LoadHistoryRecord(*r) for r in conn.execute(sql, params).fetchall()]
 
     def mark_history_replaced(self, conn: sqlite3.Connection, file_name: str) -> int:
         """Demote earlier successful loads of *file_name* to status 'replaced'."""
@@ -393,6 +418,26 @@ class StageDatabase:
         if where:
             sql += " WHERE " + " AND ".join(where)
         return frozenset(r[0] for r in conn.execute(sql, params).fetchall())
+
+    def tickers_by_source(self, market: str | None = None,
+                          conn: sqlite3.Connection | None = None) -> dict[str, frozenset[str]]:
+        """``{SourceFile: tickers}`` for the whole staging table (optionally one
+        market) in ONE scan.  A multi-file run builds the set of known tickers
+        from this once and keeps it up to date file by file, instead of
+        re-scanning the growing table after every file (see loader)."""
+        if conn is None:
+            with self.connection() as c:
+                return self.tickers_by_source(market, c)
+        sep = "\x1f"
+        sql = (f"SELECT {self.q('SourceFile')}, GROUP_CONCAT({self.q('Ticker')}, '{sep}') FROM "
+               f"(SELECT DISTINCT {self.q('SourceFile')}, {self.q('Ticker')} FROM {self.table}")
+        params: list = []
+        if market:
+            sql += f" WHERE {self.q('Market')} = ?"
+            params.append(market)
+        sql += f") GROUP BY {self.q('SourceFile')}"
+        return {src: frozenset(tickers.split(sep)) if tickers else frozenset()
+                for src, tickers in conn.execute(sql, params).fetchall()}
 
     def count_rows(self, conn: sqlite3.Connection | None = None, source_file: str | None = None) -> int:
         if conn is None:

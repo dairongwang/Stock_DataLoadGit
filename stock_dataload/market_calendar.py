@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Collection, FrozenSet
 
-__all__ = ["easter_sunday", "us_market_holidays", "is_market_open", "parse_holiday"]
+__all__ = ["easter_sunday", "us_market_holidays", "us_market_holiday_names", "is_market_open", "parse_holiday"]
 
 
 class CalendarError(ValueError):
@@ -68,27 +68,33 @@ def _observed(holiday: date) -> date | None:
     return holiday
 
 
-def us_market_holidays(year: int) -> FrozenSet[date]:
-    """All full-day US market holidays (observed dates) of *year*."""
-    fixed = [date(year, 1, 1), date(year, 7, 4), date(year, 12, 25)]
+def us_market_holiday_names(year: int) -> dict[date, str]:
+    """All full-day US market holidays of *year*: ``{observed date: name}``."""
+    fixed = [(date(year, 1, 1), "New Year's Day"), (date(year, 7, 4), "Independence Day"),
+             (date(year, 12, 25), "Christmas Day")]
     if year >= 2022:  # Juneteenth became a market holiday in 2022
-        fixed.append(date(year, 6, 19))
+        fixed.append((date(year, 6, 19), "Juneteenth National Independence Day"))
     floating = [
-        _nth_weekday(year, 1, 0, 3),    # Martin Luther King Jr. Day (3rd Monday Jan)
-        _nth_weekday(year, 2, 0, 3),    # Washington's Birthday (3rd Monday Feb)
-        easter_sunday(year) - timedelta(days=2),  # Good Friday
-        _last_weekday(year, 5, 0),      # Memorial Day (last Monday May)
-        _nth_weekday(year, 9, 0, 1),    # Labor Day (1st Monday Sep)
-        _nth_weekday(year, 11, 3, 4),   # Thanksgiving (4th Thursday Nov)
+        (_nth_weekday(year, 1, 0, 3), "Martin Luther King Jr. Day"),      # 3rd Monday Jan
+        (_nth_weekday(year, 2, 0, 3), "Washington's Birthday"),           # 3rd Monday Feb
+        (easter_sunday(year) - timedelta(days=2), "Good Friday"),
+        (_last_weekday(year, 5, 0), "Memorial Day"),                      # last Monday May
+        (_nth_weekday(year, 9, 0, 1), "Labor Day"),                       # 1st Monday Sep
+        (_nth_weekday(year, 11, 3, 4), "Thanksgiving Day"),               # 4th Thursday Nov
     ]
-    holidays = set(floating)
-    for day in fixed:
+    holidays = dict(floating)
+    for day, name in fixed:
         observed = _observed(day)
         if observed is not None:
-            holidays.add(observed)
+            holidays[observed] = name if observed == day else f"{name} (observed)"
     # New Year's Day of *next* year observed on Dec 31 of this year? Not on NYSE
     # (rule 7.2: no observance when it would move into the prior year) - nothing to add.
-    return frozenset(holidays)
+    return holidays
+
+
+def us_market_holidays(year: int) -> FrozenSet[date]:
+    """All full-day US market holidays (observed dates) of *year*."""
+    return frozenset(us_market_holiday_names(year))
 
 
 def parse_holiday(value: str | date) -> date:

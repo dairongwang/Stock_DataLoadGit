@@ -1,0 +1,141 @@
+-- promote_weekly: Stock_Daily -> Stock_Weekly (one row per stock and ISO week).
+-- Parameters: :now. Incremental mode adds "UpdatedAt" >= :since to step 1 and skips step 5.
+-- Generated from stock_dataload/promotion.py - run by PromotionService inside ONE transaction (BEGIN IMMEDIATE ... COMMIT).
+-- The temporary tables live in the connection only. SQLite has no stored procedures: this is the procedure.
+
+BEGIN IMMEDIATE;
+
+-- the temporary tables live in this connection only (they vanish with it)
+DROP TABLE IF EXISTS "_promote_periods";
+DROP TABLE IF EXISTS "_promote_agg";
+DROP TABLE IF EXISTS "_promote_rows";
+DROP TABLE IF EXISTS "_promote_open_days";
+DROP TABLE IF EXISTS "_promote_symbols";
+DROP TABLE IF EXISTS "_promote_gaps";
+
+-- step 1: the stock/ISO week (Monday..Sunday) periods to (re)compute - every period of the daily
+-- table (full)
+CREATE TEMP TABLE "_promote_periods" AS
+SELECT DISTINCT d."Ticker", date(d."TradeDate", 'weekday 0', '-6 days') AS "PeriodStart"
+  FROM "Stock_Daily" d;
+SELECT COUNT(*) FROM "_promote_periods";
+
+-- step 2: aggregate the trading days of each period (high = highest high, low = lowest low, volume
+-- = sum); the daily rows are found through the UNIQUE (Ticker, TradeDate) index
+CREATE TEMP TABLE "_promote_agg" AS
+SELECT p."Ticker", p."PeriodStart", date(p."PeriodStart", '+6 days') AS "PeriodEnd",
+       MIN(d."TradeDate") AS "FirstTradeDate", MAX(d."TradeDate") AS "LastTradeDate",
+       COUNT(*) AS "TradingDays", MAX(d."High") AS "High", MIN(d."Low") AS "Low", SUM(d."Volume") AS "Volume"
+  FROM "_promote_periods" p
+  JOIN "Stock_Daily" d ON d."Ticker" = p."Ticker" AND d."TradeDate" >= p."PeriodStart" AND d."TradeDate" <= date(p."PeriodStart", '+6 days')
+ GROUP BY p."Ticker", p."PeriodStart";
+
+-- step 3: open = open of the first trading day, close = close of the last trading day, market =
+-- market of the last day; ISO year / week number: the week belongs to the year of its Thursday
+-- (Monday + 3 days); week = (day of year of that Thursday - 1) / 7 + 1
+CREATE TEMP TABLE "_promote_rows" AS
+SELECT l."Market", a."Ticker", a."PeriodStart", a."PeriodEnd",
+       CAST(strftime('%Y', a."PeriodStart", '+3 days') AS INTEGER) AS "ISOYear",
+       (CAST(strftime('%j', a."PeriodStart", '+3 days') AS INTEGER) - 1) / 7 + 1 AS "ISOWeek",
+       f."Open", a."High", a."Low", l."Close", a."Volume", a."TradingDays", a."FirstTradeDate", a."LastTradeDate",
+       0 AS "ExpectedDays", 0 AS "MissingDays", NULL AS "MissingDates", 1 AS "Complete"
+  FROM "_promote_agg" a
+  JOIN "Stock_Daily" f ON f."Ticker" = a."Ticker" AND f."TradeDate" = a."FirstTradeDate"
+  JOIN "Stock_Daily" l ON l."Ticker" = a."Ticker" AND l."TradeDate" = a."LastTradeDate";
+CREATE INDEX "_ix_promote_rows" ON "_promote_rows" ("Ticker", "PeriodStart");
+
+-- step 3b (validation): the days the markets were open over the periods, between the earliest and
+-- the latest trade date loaded for the market - filled by the application from the No_Trading_Day
+-- table
+CREATE TEMP TABLE "_promote_open_days" ("Market" TEXT NOT NULL, "TradeDate" TEXT NOT NULL, PRIMARY KEY ("Market", "TradeDate"));
+
+-- the trading window of every stock with known dates (Stock_Symbol table)
+CREATE TEMP TABLE "_promote_symbols" AS
+SELECT "Market", "Ticker", "FirstTradeDate", "LastTradeDate"
+  FROM "Stock_Symbol"
+ WHERE "FirstTradeDate" IS NOT NULL OR "LastTradeDate" IS NOT NULL;
+CREATE INDEX "_ix_promote_symbols" ON "_promote_symbols" ("Market", "Ticker");
+
+-- every trading day of the period (market open, inside the stock's trading window if its first /
+-- last trade date is known) must have a daily row - count the expected and the missing days per
+-- stock and period
+CREATE TEMP TABLE "_promote_gaps" AS
+SELECT "Ticker", "PeriodStart", COUNT(*) AS "ExpectedDays",
+       SUM("Missing") AS "MissingDays",
+       GROUP_CONCAT(CASE WHEN "Missing" = 1 THEN "TradeDate" END, ',') AS "MissingDates"
+  FROM (SELECT r."Ticker", r."PeriodStart", o."TradeDate",
+               CASE WHEN d."TradeDate" IS NULL THEN 1 ELSE 0 END AS "Missing"
+          FROM "_promote_rows" r
+          JOIN "_promote_open_days" o ON o."Market" = COALESCE(r."Market", '')
+                                AND o."TradeDate" BETWEEN r."PeriodStart" AND r."PeriodEnd"
+          LEFT JOIN "_promote_symbols" s ON s."Market" = COALESCE(r."Market", '') AND s."Ticker" = r."Ticker"
+          LEFT JOIN "Stock_Daily" d ON d."Ticker" = r."Ticker" AND d."TradeDate" = o."TradeDate"
+         WHERE (s."FirstTradeDate" IS NULL OR o."TradeDate" >= s."FirstTradeDate")
+           AND (s."LastTradeDate" IS NULL OR o."TradeDate" <= s."LastTradeDate")
+         ORDER BY r."Ticker", r."PeriodStart", o."TradeDate")
+ GROUP BY "Ticker", "PeriodStart";
+CREATE INDEX "_ix_promote_gaps" ON "_promote_gaps" ("Ticker", "PeriodStart");
+
+-- mark the incomplete periods
+UPDATE "_promote_rows" SET
+       "ExpectedDays" = COALESCE((SELECT g."ExpectedDays" FROM "_promote_gaps" g
+                                   WHERE g."Ticker" = "_promote_rows"."Ticker" AND g."PeriodStart" = "_promote_rows"."PeriodStart"), 0),
+       "MissingDays" = COALESCE((SELECT g."MissingDays" FROM "_promote_gaps" g
+                                  WHERE g."Ticker" = "_promote_rows"."Ticker" AND g."PeriodStart" = "_promote_rows"."PeriodStart"), 0),
+       "MissingDates" = (SELECT g."MissingDates" FROM "_promote_gaps" g
+                          WHERE g."Ticker" = "_promote_rows"."Ticker" AND g."PeriodStart" = "_promote_rows"."PeriodStart");
+UPDATE "_promote_rows" SET "Complete" = CASE WHEN "MissingDays" > 0 THEN 0 ELSE 1 END;
+SELECT COUNT(*) FROM "_promote_rows" WHERE "Complete" = 0;
+
+-- incomplete periods -> Data_Error (once per open finding)
+INSERT INTO "Data_Error" ("DetectedAt", "SourceFile", "LoadId", "Market", "Ticker", "TradeDate",
+                                  "ColumnName", "Value", "Rule", "Severity", "Alert", "ErrorMessage", "LineNo")
+SELECT :now, 'Stock_Weekly', NULL, r."Market", r."Ticker", r."PeriodStart", 'TradingDays',
+       r."TradingDays" || '/' || r."ExpectedDays", 'incomplete_week', 'error', 0,
+       r."Ticker" || ' ' || 'week ' || r."ISOYear" || '-W' || printf('%02d', r."ISOWeek") || ' (' || r."PeriodStart" || '..' || r."PeriodEnd" || ')' || ' is incomplete: ' || (r."ExpectedDays" - r."MissingDays") || ' of '
+       || r."ExpectedDays" || ' trading days loaded - missing ' || r."MissingDates", NULL
+  FROM "_promote_rows" r
+ WHERE r."Complete" = 0
+   AND NOT EXISTS (SELECT 1 FROM "Data_Error" e
+                    WHERE e."Resolved" = 0 AND e."Rule" = 'incomplete_week' AND e."SourceFile" = 'Stock_Weekly'
+                      AND e."Ticker" = r."Ticker" AND e."TradeDate" = r."PeriodStart");
+
+-- periods that are complete again resolve their open finding
+UPDATE "Data_Error"
+   SET "Resolved" = 1, "ResolvedAt" = :now,
+       "ResolutionNote" = 'complete after the promotion of ' || :now
+ WHERE "Resolved" = 0 AND "Rule" = 'incomplete_week' AND "SourceFile" = 'Stock_Weekly'
+   AND EXISTS (SELECT 1 FROM "_promote_rows" r
+                WHERE r."Ticker" = "Data_Error"."Ticker" AND r."PeriodStart" = "Data_Error"."TradeDate"
+                  AND r."Complete" = 1);
+
+-- step 4: how many periods already exist ...
+SELECT COUNT(*) FROM "_promote_rows" r JOIN "Stock_Weekly" t ON t."Ticker" = r."Ticker" AND t."WeekStart" = r."PeriodStart";
+
+-- ... and how many of them changed
+SELECT COUNT(*) FROM "_promote_rows" r JOIN "Stock_Weekly" t ON t."Ticker" = r."Ticker" AND t."WeekStart" = r."PeriodStart" WHERE t."Open" IS NOT r."Open" OR t."High" IS NOT r."High" OR t."Low" IS NOT r."Low" OR t."Close" IS NOT r."Close" OR t."Volume" IS NOT r."Volume" OR t."TradingDays" IS NOT r."TradingDays" OR t."FirstTradeDate" IS NOT r."FirstTradeDate" OR t."LastTradeDate" IS NOT r."LastTradeDate" OR t."Market" IS NOT r."Market" OR t."WeekEnd" IS NOT r."PeriodEnd" OR t."ISOYear" IS NOT r."ISOYear" OR t."ISOWeek" IS NOT r."ISOWeek" OR t."ExpectedDays" IS NOT r."ExpectedDays" OR t."MissingDays" IS NOT r."MissingDays" OR t."MissingDates" IS NOT r."MissingDates" OR t."Complete" IS NOT r."Complete";
+
+-- upsert: new periods are inserted, existing ones updated only if something changed
+INSERT INTO "Stock_Weekly" ("Market", "Ticker", "WeekStart", "WeekEnd", "ISOYear", "ISOWeek",
+                      "Open", "High", "Low", "Close", "Volume", "TradingDays", "FirstTradeDate", "LastTradeDate",
+                      "ExpectedDays", "MissingDays", "MissingDates", "Complete", "PromotedAt", "UpdatedAt")
+SELECT r."Market", r."Ticker", r."PeriodStart", r."PeriodEnd", r."ISOYear", r."ISOWeek",
+       r."Open", r."High", r."Low", r."Close", r."Volume", r."TradingDays", r."FirstTradeDate", r."LastTradeDate",
+       r."ExpectedDays", r."MissingDays", r."MissingDates", r."Complete", :now, :now
+  FROM "_promote_rows" r
+ WHERE true
+ON CONFLICT ("Ticker", "WeekStart") DO UPDATE SET
+       "Market" = excluded."Market", "WeekEnd" = excluded."WeekEnd",
+       "ISOYear" = excluded."ISOYear", "ISOWeek" = excluded."ISOWeek",
+       "Open" = excluded."Open", "High" = excluded."High", "Low" = excluded."Low", "Close" = excluded."Close",
+       "Volume" = excluded."Volume", "TradingDays" = excluded."TradingDays",
+       "FirstTradeDate" = excluded."FirstTradeDate", "LastTradeDate" = excluded."LastTradeDate",
+       "ExpectedDays" = excluded."ExpectedDays", "MissingDays" = excluded."MissingDays",
+       "MissingDates" = excluded."MissingDates", "Complete" = excluded."Complete",
+       "UpdatedAt" = excluded."UpdatedAt"
+ WHERE "Stock_Weekly"."Open" IS NOT excluded."Open" OR "Stock_Weekly"."High" IS NOT excluded."High" OR "Stock_Weekly"."Low" IS NOT excluded."Low" OR "Stock_Weekly"."Close" IS NOT excluded."Close" OR "Stock_Weekly"."Volume" IS NOT excluded."Volume" OR "Stock_Weekly"."TradingDays" IS NOT excluded."TradingDays" OR "Stock_Weekly"."FirstTradeDate" IS NOT excluded."FirstTradeDate" OR "Stock_Weekly"."LastTradeDate" IS NOT excluded."LastTradeDate" OR "Stock_Weekly"."Market" IS NOT excluded."Market" OR "Stock_Weekly"."WeekEnd" IS NOT excluded."WeekEnd" OR "Stock_Weekly"."ISOYear" IS NOT excluded."ISOYear" OR "Stock_Weekly"."ISOWeek" IS NOT excluded."ISOWeek" OR "Stock_Weekly"."ExpectedDays" IS NOT excluded."ExpectedDays" OR "Stock_Weekly"."MissingDays" IS NOT excluded."MissingDays" OR "Stock_Weekly"."MissingDates" IS NOT excluded."MissingDates" OR "Stock_Weekly"."Complete" IS NOT excluded."Complete";
+
+-- step 5 (full mode only): remove aggregates whose daily rows are gone
+DELETE FROM "Stock_Weekly" WHERE NOT EXISTS (SELECT 1 FROM "Stock_Daily" d WHERE d."Ticker" = "Stock_Weekly"."Ticker" AND d."TradeDate" >= "Stock_Weekly"."WeekStart" AND d."TradeDate" <= "Stock_Weekly"."WeekEnd");
+
+COMMIT;

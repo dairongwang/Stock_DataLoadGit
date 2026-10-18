@@ -237,6 +237,9 @@ sqlite_path = cli.db
         self.assertIn("FileFormatError", out)
 
     def test_data_errors_command_shows_findings_and_alerts(self):
+        for ticker in ("AAA", "BBB"):      # only stocks with a known first trade date are checked for missing days
+            rc, out, _ = self.run_cli("symbols", "set", ticker, "--market", "NYSE", "--first-trade-date", "2020-01-02")
+            self.assertEqual(rc, 0, out)
         self.write("loading/NYSE_20250109.txt",
                    "<ticker>,<date>,<open>,<high>,<low>,<close>,<vol>\n"
                    "AAA,20250109,1,2,0.5,1.5,100\nBBB,20250109,1,2,0.5,1.5,100\n")

@@ -62,7 +62,7 @@ and every load attempt in <code>Load_History</code>.</p>
       <tr>
         <td class="muted">{{ h.loaded_at }}</td>
         <td class="mono">{{ h.file_name }}</td>
-        <td><span class="badge {{ 'ok' if h.status == 'loaded' else 'err' if h.status == 'failed' else '' }}">{{ h.status }}</span></td>
+        <td><span class="badge {{ 'ok' if h.status == 'loaded' else 'err' if h.status == 'failed' else 'warn' if h.status == 'skipped' else '' }}">{{ h.status }}</span></td>
         <td class="num">{{ '{:,}'.format(h.rows_loaded) }}</td>
       </tr>
       {% endfor %}

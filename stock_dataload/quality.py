@@ -12,10 +12,14 @@ without touching the checker or the loader::
 Two kinds of strategies:
 
 * :class:`RowValidationStrategy`     - looks at a single row
-  (``date_is_valid``, ``numeric_columns``, ``high_above_low``);
+  (``date_is_valid``, ``numeric_columns``, ``high_above_low``,
+  ``before_first_trade_date`` / ``after_last_trade_date``: data outside the
+  stock's trading window from the ``Stock_Symbol`` table);
 * :class:`DatasetValidationStrategy` - looks at the whole file in context
   (``missing_market_day``: a stock known from previous loads that has no
-  valid row for a day the market was open -> **alert**).
+  valid row for a day the market was open **and that lies inside the stock's
+  trading window** -> **alert**; a stock without a first trade date is not
+  checked).
 
 Findings are :class:`QualityIssue` objects; the :class:`DataErrorRepository`
 persists them in the ``Data_Error`` table.
@@ -24,6 +28,7 @@ persists them in the ``Data_Error`` table.
 from __future__ import annotations
 
 import abc
+import functools
 import logging
 import sqlite3
 from contextlib import contextmanager
@@ -101,11 +106,29 @@ class QualityContext:
     market_open: Callable[[date], bool] | None = None
     #: (ticker, date) keys of rows that failed a row-level rule; set by the checker
     invalid_row_keys: set[tuple[str, str]] = field(default_factory=set)
+    #: trading window per ticker from the Stock_Symbol table: (first trade date, last trade date),
+    #: either may be None.  None = no symbol table (every expected ticker is checked on every day)
+    trading_windows: Mapping[str, tuple[date | None, date | None]] | None = None
 
     def is_market_open(self, day: date) -> bool:
         if self.market_open is not None:
             return self.market_open(day)
         return market_calendar.is_market_open(day, self.extra_holidays)
+
+    def window_of(self, ticker: str) -> tuple[date | None, date | None]:
+        if self.trading_windows is None:
+            return None, None
+        return self.trading_windows.get(ticker, (None, None))
+
+    def is_expected_on(self, ticker: str, day: date) -> bool:
+        """Should *ticker* have delivered data on *day*?  Only inside its trading
+        window - and only if the first trade date is known at all."""
+        if self.trading_windows is None:
+            return True
+        first, last = self.window_of(ticker)
+        if first is None:
+            return False
+        return first <= day and (last is None or day <= last)
 
 
 # ---------------------------------------------------------------------------
@@ -148,10 +171,14 @@ def _parse_number(value: str) -> float | None:
         return None
 
 
+@functools.lru_cache(maxsize=4096)
 def _parse_trade_date(value: str) -> date | None:
+    """``YYYYMMDD`` -> date (None if invalid).  Cached: a file has one trade
+    date for thousands of rows and a bulk load repeats the same few hundred
+    dates hundreds of thousands of times - ``strptime`` is the slowest step."""
     try:
         return datetime.strptime(value.strip(), formats.DEFAULT_DATE_FORMAT).date()
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, AttributeError):
         return None
 
 
@@ -214,6 +241,42 @@ class HighAboveLowStrategy(RowValidationStrategy):
         return []
 
 
+class BeforeFirstTradeDateStrategy(RowValidationStrategy):
+    """A row dated before the stock's first trade date cannot be real data."""
+
+    name = "before_first_trade_date"
+    description = "a stock has no data before the day it started to trade (Stock_Symbol table)"
+
+    def validate_row(self, row: DataRow, context: QualityContext) -> list[QualityIssue]:
+        day = _parse_trade_date(row.trade_date)
+        first, _ = context.window_of(row.ticker)
+        if day is None or first is None or day >= first:
+            return []
+        return [QualityIssue(self.name,
+                             f"{row.ticker} started to trade on {first.isoformat()} - data for {day.isoformat()} "
+                             f"is before its first trade date",
+                             ticker=row.ticker, trade_date=row.trade_date, column="date", value=row.trade_date,
+                             line_no=row.line_no)]
+
+
+class AfterLastTradeDateStrategy(RowValidationStrategy):
+    """A row dated after the stock's last trade date (delisting) cannot be real data."""
+
+    name = "after_last_trade_date"
+    description = "a stock has no data after the day it stopped trading (Stock_Symbol table)"
+
+    def validate_row(self, row: DataRow, context: QualityContext) -> list[QualityIssue]:
+        day = _parse_trade_date(row.trade_date)
+        _, last = context.window_of(row.ticker)
+        if day is None or last is None or day <= last:
+            return []
+        return [QualityIssue(self.name,
+                             f"{row.ticker} stopped trading on {last.isoformat()} - data for {day.isoformat()} "
+                             f"is after its last trade date",
+                             ticker=row.ticker, trade_date=row.trade_date, column="date", value=row.trade_date,
+                             line_no=row.line_no)]
+
+
 class MissingMarketDayStrategy(DatasetValidationStrategy):
     """ALERT: a known stock has no valid data for a day the market was open.
 
@@ -221,6 +284,11 @@ class MissingMarketDayStrategy(DatasetValidationStrategy):
     with every ticker previously loaded for the same market).  A stock is
     covered for a day only by a row that passed all row-level rules -
     a stock whose only row is broken is as missing as an absent one.
+
+    With a symbol table (``context.trading_windows``) a stock is only expected
+    on days inside its trading window: before its first trade date (or after
+    its last) no data is correct, and a stock whose first trade date is not
+    known is not checked at all.
     """
 
     name = "missing_market_day"
@@ -239,6 +307,8 @@ class MissingMarketDayStrategy(DatasetValidationStrategy):
                        if r.ticker and r.trade_date == date_str
                        and (r.ticker, date_str) not in context.invalid_row_keys}
             for ticker in sorted(context.expected_tickers - covered):
+                if not context.is_expected_on(ticker, day):
+                    continue
                 issues.append(QualityIssue(
                     self.name,
                     f"no valid data for {ticker} on {day.isoformat()} although the market was open",
@@ -250,7 +320,7 @@ class MissingMarketDayStrategy(DatasetValidationStrategy):
 def default_strategies() -> list[ValidationStrategy]:
     """The standard business rule set."""
     return [DateIsValidStrategy(), NumericColumnsStrategy(), HighAboveLowStrategy(),
-            MissingMarketDayStrategy()]
+            BeforeFirstTradeDateStrategy(), AfterLastTradeDateStrategy(), MissingMarketDayStrategy()]
 
 
 # ---------------------------------------------------------------------------
@@ -337,8 +407,12 @@ _DATA_ERROR_MIGRATIONS = (
     ("ResolutionNote", '"ResolutionNote" TEXT'),
 )
 
-_DATA_ERROR_INDEX = (f'CREATE INDEX IF NOT EXISTS "IX_{DATA_ERROR_TABLE}_SourceFile" '
-                     f'ON "{DATA_ERROR_TABLE}" ("SourceFile")')
+_DATA_ERROR_INDEXES = (
+    f'CREATE INDEX IF NOT EXISTS "IX_{DATA_ERROR_TABLE}_SourceFile" ON "{DATA_ERROR_TABLE}" ("SourceFile")',
+    # findings of one stock/day: data correction page, promotion (records a finding once while open)
+    f'CREATE INDEX IF NOT EXISTS "IX_{DATA_ERROR_TABLE}_Ticker_TradeDate" '
+    f'ON "{DATA_ERROR_TABLE}" ("Ticker", "TradeDate")',
+)
 
 DATA_ERROR_COLUMNS = ("DataErrorId", "DetectedAt", "SourceFile", "LoadId", "Market", "Ticker",
                       "TradeDate", "ColumnName", "Value", "Rule", "Severity", "Alert",
@@ -394,7 +468,8 @@ class DataErrorRepository:
                 self.ensure_table(c)
             return
         conn.execute(_DATA_ERROR_DDL)
-        conn.execute(_DATA_ERROR_INDEX)
+        for ddl in _DATA_ERROR_INDEXES:
+            conn.execute(ddl)
         existing = {r[1] for r in conn.execute(f'PRAGMA table_info("{DATA_ERROR_TABLE}")')}
         for column, ddl in _DATA_ERROR_MIGRATIONS:
             if column not in existing:

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Stock symbols{% endblock %}
+{% block content %}
+<h1>Stock symbols <span class="muted" style="font-size:13px;font-weight:400">Stock_Symbol - market, first and last trade date per symbol</span></h1>
+<p class="muted">Every symbol the loader sees is registered here with the market of its file and the range of dates loaded
+(<i>first seen .. last seen</i>). The <b>first trade date</b> (and, for delisted stocks, the <b>last trade date</b>) is a fact about the
+listing you maintain - by hand or by importing a CSV. Data dated <b>before the first trade date</b> (or after the last) is invalid:
+it is flagged at load time (<code>before_first_trade_date</code> / <code>after_last_trade_date</code> under
+<a href="{{ url_for('monitor_data_errors') }}">data errors</a>) and rejected by the promotion. The <b>missing-market-day</b> alert
+is only raised inside a symbol's trading window - a symbol <b>without a first trade date is not checked</b> for missing days.</p>
+
+<div class="stats" style="grid-template-columns:repeat(4, 1fr)">
+  <a class="card stat-card" href="{{ url_for('symbols_page', market=args.get('market', '')) }}"><div class="stat">{{ '{:,}'.format(counts.get('symbols', 0)) }}</div><div class="muted">symbols</div></a>
+  <a class="card stat-card" href="{{ url_for('symbols_page', market=args.get('market', '')) }}"><div class="stat">{{ '{:,}'.format(counts.get('with_first_trade_date', 0)) }}</div><div class="muted">with a first trade date (checked for missing days)</div></a>
+  <a class="card stat-card" href="{{ url_for('symbols_page', market=args.get('market', ''), missing=1) }}"><div class="stat">{{ '{:,}'.format(counts.get('without_first_trade_date', 0)) }}</div><div class="muted">without (not checked)</div></a>
+  <a class="card stat-card {{ 'warnish' if counts.get('data_before_listing') }}" href="{{ url_for('symbols_page', market=args.get('market', ''), suspicious=1) }}"><div class="stat">{{ '{:,}'.format(counts.get('data_before_listing', 0)) }}</div><div class="muted">with data before their first trade date</div></a>
+</div>
+
+{% if can('operator') %}
+<div class="grid2">
+  <div class="card">
+    <h2>{{ 'Edit ' ~ edit_symbol.ticker if edit_symbol else 'Set a symbol' }}</h2>
+    <form method="post" action="{{ url_for('symbol_save') }}">
+      <div class="form-grid" style="grid-template-columns:140px 1fr">
+        <label>Ticker</label><input type="text" name="ticker" value="{{ edit_symbol.ticker if edit_symbol else '' }}" placeholder="e.g. HCMAU" style="width:160px" required>
+        <label>Market</label><input type="text" name="market" value="{{ edit_symbol.market if edit_symbol else args.get('market', '') }}" placeholder="e.g. NASDAQ" style="width:160px">
+        <label>First trade date</label><input type="text" name="first_trade_date" value="{{ edit_symbol.first_trade_date or '' if edit_symbol else '' }}" placeholder="YYYY-MM-DD (empty = unknown)" style="width:220px">
+        <label>Last trade date</label><input type="text" name="last_trade_date" value="{{ edit_symbol.last_trade_date or '' if edit_symbol else '' }}" placeholder="YYYY-MM-DD (empty = still trading)" style="width:220px">
+        <label>Name</label><input type="text" name="name" value="{{ edit_symbol.name or '' if edit_symbol else '' }}">
+        <label>Note</label><input type="text" name="note" value="{{ edit_symbol.note or '' if edit_symbol else '' }}">
+        {% if edit_symbol %}<label>Data loaded</label><span class="muted">{{ edit_symbol.first_seen or '-' }} .. {{ edit_symbol.last_seen or '-' }} ({{ edit_symbol.source }})</span>{% endif %}
+      </div>
+      <div class="actions"><button type="submit">Save</button>
+        {% if edit_symbol %}<a class="btn secondary" href="{{ url_for('symbols_page') }}">Cancel</a>{% endif %}</div>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Import first / last trade dates (CSV)</h2>
+    <p class="muted">Columns: <code>ticker</code> (or symbol), <code>market</code> (optional if given below), <code>first_trade_date</code> (or ipo / listed),
+      <code>last_trade_date</code> (or delisted), <code>name</code>. Dates as YYYY-MM-DD; an empty date clears the value. Existing symbols are updated, new ones created.</p>
+    <form method="post" action="{{ url_for('symbols_import') }}" enctype="multipart/form-data" class="toolbar">
+      <input type="file" name="file" accept=".csv,.txt" required>
+      <input type="text" name="market" placeholder="market for rows without one" style="width:200px">
+      <button type="submit" class="small">Import</button>
+    </form>
+    <p class="muted" style="margin-bottom:0">Command line: <code>python -m stock_dataload symbols import FILE.csv</code>, <code>symbols export symbols.csv</code> to edit the current table in Excel.</p>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <form method="get" class="toolbar">
+    <h2 style="margin:0">Symbols</h2>
+    <label style="margin-left:auto">Ticker <input type="text" name="ticker" value="{{ args.get('ticker', '') }}" placeholder="prefix" style="width:110px"></label>
+    <label>Market <select name="market"><option value="">all</option>{% for m in markets %}<option value="{{ m }}" {% if args.get('market') == m %}selected{% endif %}>{{ m or '(none)' }}</option>{% endfor %}</select></label>
+    <label><input type="checkbox" name="missing" value="1" {% if args.get('missing') == '1' %}checked{% endif %}> without first trade date</label>
+    <label><input type="checkbox" name="suspicious" value="1" {% if args.get('suspicious') == '1' %}checked{% endif %}> data before first trade date</label>
+    <label>Show <input type="number" name="limit" value="{{ limit }}" min="1" max="5000" style="width:80px"></label>
+    <button type="submit" class="small">Filter</button>
+    <a class="btn small secondary" href="{{ url_for('api_symbols', **args) }}">JSON</a>
+  </form>
+  {% if rows %}
+  <table>
+    <tr><th>Ticker</th><th>Market</th><th>Name</th><th>First trade</th><th>Last trade</th><th>Data loaded</th><th>Source</th>{% if can('operator') %}<th></th>{% endif %}</tr>
+    {% for s in rows %}
+    <tr>
+      <td class="mono"><b>{{ s.ticker }}</b></td>
+      <td>{{ s.market }}</td>
+      <td>{{ s.name or '' }}</td>
+      <td class="mono">{{ s.first_trade_date or '' }}{% if not s.first_trade_date %}<span class="muted">unknown - not checked</span>{% endif %}</td>
+      <td class="mono">{{ s.last_trade_date or '' }}</td>
+      <td class="mono {{ 'warn' if s.data_before_listing }}" title="{{ 'data before the first trade date!' if s.data_before_listing }}">{{ s.first_seen or '-' }} .. {{ s.last_seen or '-' }}{% if s.data_before_listing %} !{% endif %}</td>
+      <td><span class="badge">{{ s.source }}</span></td>
+      {% if can('operator') %}<td style="white-space:nowrap"><a class="btn small secondary" href="{{ url_for('symbols_page', edit=s.ticker, edit_market=s.market, ticker=args.get('ticker', ''), market=args.get('market', '')) }}">edit</a>
+        <form method="post" action="{{ url_for('symbol_delete') }}" class="inline" onsubmit="return confirm('Remove {{ s.ticker }} from the symbol table?')"><input type="hidden" name="ticker" value="{{ s.ticker }}"><input type="hidden" name="market" value="{{ s.market }}"><button class="small danger">delete</button></form></td>{% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No symbols match{% if not counts.get('symbols') %} - symbols are registered when files are loaded{% endif %}.</p>{% endif %}
+</div>
+{% endblock %}

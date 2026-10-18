@@ -212,7 +212,11 @@ class FileConverter:
             table = read_source(source, fmt)
         except ReadError as exc:
             raise ConversionError(str(exc)) from exc
-        mapping = resolve_mapping(fmt, table.header)
+        try:
+            mapping = resolve_mapping(fmt, table.header)
+        except Exception:
+            table.close()          # do not leave the source file open (Windows: cannot move/delete it)
+            raise
         return table, mapping
 
     def inspect(self, source: Path, fmt: FileFormat | str | None = None) -> tuple[str | None, list[str] | None, dict[str, int]]:
@@ -223,7 +227,7 @@ class FileConverter:
         try:
             return table.delimiter, table.header, mapping
         finally:
-            table.rows.close() if hasattr(table.rows, "close") else None
+            table.close()
 
     def preview(self, source: Path, fmt: FileFormat | str | None = None, limit: int = 10) -> dict[str, Any]:
         """Dry run for the dashboard: source sample, mapping and converted sample."""
@@ -264,8 +268,7 @@ class FileConverter:
                     except ConversionError as exc:
                         out["errors"].append(str(exc))
         finally:
-            if hasattr(table.rows, "close"):
-                table.rows.close()
+            table.close()
         out["total_rows"] = total
         out["ok"] = bool(out["mapping"]) and not out["errors"]
         return out
@@ -332,8 +335,7 @@ class FileConverter:
             out_name = self._unique_name(final_dir, source, out_name)
         final_path = final_dir / out_name
         if final_path.exists() and on_conflict == "error":
-            if hasattr(table.rows, "close"):
-                table.rows.close()
+            table.close()
             raise ConversionError(f"target already exists: {final_path} (choose overwrite or rename)")
 
         tmp_path = self.settings.work_dir / f"{out_name}.{os.getpid()}.converting"
@@ -369,8 +371,7 @@ class FileConverter:
             result.moved_to_loading = move_to_loading
             result.rows_skipped = len(result.rejects)
         finally:
-            if hasattr(table.rows, "close"):
-                table.rows.close()
+            table.close()
             if tmp_path.exists():
                 tmp_path.unlink()
         if move_source:

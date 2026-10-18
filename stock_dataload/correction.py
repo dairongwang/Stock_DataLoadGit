@@ -29,6 +29,7 @@ from .config import Settings
 from .db import MANUAL_LOAD_ID, STAGE_EDITABLE_COLUMNS, StageDatabase, StageRow, now_iso
 from .quality import (DataErrorRecord, DataErrorRepository, DataQualityChecker, DataRow,
                       QualityContext, QualityIssue, RowValidationStrategy, default_strategies)
+from .symbols import SymbolRegistry
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ class CorrectionService:
         # corrections are validated with the row-level business rules only
         self.checker = checker or DataQualityChecker(
             [s for s in default_strategies() if isinstance(s, RowValidationStrategy)])
+        self.symbols = SymbolRegistry(settings, self.db, audit=self.audit)
         self._table_ready = False
 
     # -- persistence ------------------------------------------------------
@@ -184,7 +186,12 @@ class CorrectionService:
             issues.append(QualityIssue("required", "trade date is required", column="TradeDate"))
         row = DataRow(0, {file_col: str(values.get(stage_col, "")).strip()
                           for stage_col, file_col in _STAGE_TO_FILE.items()})
-        issues += self.checker.check([row], QualityContext())
+        market = str(values.get("Market", "") or "").strip()
+        try:      # the stock's trading window (Stock_Symbol) - a correction must lie inside it
+            windows = self.symbols.trading_windows(market or None, [row.ticker]) if row.ticker else {}
+        except Exception:  # noqa: BLE001 - validation must work even without the table
+            windows = {}
+        issues += self.checker.check([row], QualityContext(market=market, trading_windows=windows or None))
         return issues
 
     def _validated(self, values: Mapping[str, str]) -> dict[str, str]:

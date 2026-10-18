@@ -15,6 +15,14 @@ Pages
              the same data as JSON under /api/logs, /api/errors, /api/data-errors, /api/history
 /correct     data correction: find a staging row (or come from a data error), fix its values
              or add a missing row; changes are tracked in Data_Correction
+/promote     active tables: promote staging -> daily (validated) and daily -> weekly / monthly,
+             run history (Promotion_History); /active/<daily|weekly|monthly> browses the tables;
+             JSON under /api/promotions and /api/active/<kind>
+/load-folder bulk load every default-format file of a folder (files stay in place)
+/calendar    the trading calendar: markets and their no-trading days (No_Trading_Day table) -
+             generate a year, add / remove closures, add markets; JSON under /api/no-trading-days
+/symbols     the stock symbol table (Stock_Symbol): market, first / last trade date per symbol -
+             search, edit, import a CSV; JSON under /api/symbols
 /login       sign in (every other page requires a signed-in user); /logout; /account (own password)
 /users       user management (administrators): add / edit / deactivate / delete accounts, reset passwords
 
@@ -47,14 +55,18 @@ from ..converter import ConversionError, FileConverter
 from ..correction import CorrectionError, CorrectionService, values_from_data_error
 from ..db import FILE_TO_STAGE, STAGE_EDITABLE_COLUMNS, DatabaseError, StageDatabase
 from ..file_formats import FILE_TYPE_LABELS, FILE_TYPES, FileFormat, FormatError, FormatStore
-from ..loader import StageLoader
+from ..loader import LoadError, StageLoader
+from ..promotion import PROCEDURES, PromotionError, PromotionService
 from ..quality import DataErrorRepository
 from ..readers import SUPPORTED_EXTENSIONS, detect_file_type
+from ..symbols import SymbolError, SymbolRegistry
+from ..trading_calendar import RULE_SETS, CalendarError, TradingCalendar, default_update_years
 
 log = logging.getLogger(__name__)
 
 _SAFE_NAME = re.compile(r"^[^/\\\x00]+$")
-BROWSABLE = ("conversion_dir", "converted_dir", "loading_dir", "archive_dir", "error_dir", "work_dir", "log_dir")
+BROWSABLE = ("conversion_dir", "converted_dir", "loading_dir", "archive_dir", "error_dir", "skipped_dir", "work_dir",
+             "log_dir")
 
 
 @dataclass
@@ -84,8 +96,13 @@ class DashboardState:
         self.db = StageDatabase(settings)
         self.audit = AuditLogger(settings)
         self.data_errors = DataErrorRepository(settings)
-        self.loader = StageLoader(settings, self.db, audit=self.audit, data_errors=self.data_errors)
+        self.calendar = TradingCalendar(settings, self.db, audit=self.audit)
+        self.symbols = SymbolRegistry(settings, self.db, audit=self.audit)
+        self.loader = StageLoader(settings, self.db, audit=self.audit, data_errors=self.data_errors,
+                                  calendar=self.calendar, symbols=self.symbols)
         self.corrections = CorrectionService(settings, self.db, audit=self.audit, data_errors=self.data_errors)
+        self.promotions = PromotionService(settings, self.db, audit=self.audit, data_errors=self.data_errors,
+                                           calendar=self.calendar)
         self.users = UserStore(settings)
 
     # -- monitoring ---------------------------------------------------------
@@ -101,11 +118,21 @@ class DashboardState:
                 "corrections": self.corrections.count(),
                 "loads": self.db.count_history(),
                 "failed_loads": self.db.count_history(status="failed"),
+                "promotions": self.promotions.count_history(),
+                "failed_promotions": self.promotions.count_history(status="failed"),
             }
         except (sqlite3.Error, DatabaseError, OSError) as exc:
             log.warning("monitoring counts unavailable: %s", exc)
             return {"logs": 0, "errors": 0, "data_errors": 0, "alerts": 0, "resolved": 0, "corrections": 0,
-                    "loads": 0, "failed_loads": 0}
+                    "loads": 0, "failed_loads": 0, "promotions": 0, "failed_promotions": 0}
+
+    def active_summaries(self) -> list:
+        """Row counts etc. of the active tables (empty list if the database is unusable)."""
+        try:
+            return self.promotions.summaries()
+        except (sqlite3.Error, DatabaseError, OSError) as exc:
+            log.warning("active table summaries unavailable: %s", exc)
+            return []
 
     # -- file helpers ------------------------------------------------------
     def folder(self, key: str) -> Path:
@@ -185,9 +212,12 @@ class DashboardState:
 
 
 #: endpoints that need more than the viewer role
-_OPERATOR_ENDPOINTS = frozenset({"convert", "convert_all", "load", "upload", "delete_file", "format_edit",
-                                 "format_delete", "correct", "correct_save"})
-_ADMIN_ENDPOINTS = frozenset({"settings_page", "users", "user_new", "user_edit", "user_delete"})
+_OPERATOR_ENDPOINTS = frozenset({"convert", "convert_all", "load", "load_folder", "upload", "delete_file",
+                                 "format_edit", "format_delete", "correct", "correct_save", "promote_run",
+                                 "calendar_update", "calendar_day_add", "calendar_day_remove",
+                                 "symbol_save", "symbol_delete", "symbols_import"})
+_ADMIN_ENDPOINTS = frozenset({"settings_page", "users", "user_new", "user_edit", "user_delete",
+                              "calendar_market_add", "calendar_market_toggle"})
 #: endpoints reachable without signing in
 _PUBLIC_ENDPOINTS = frozenset({"static", "login"})
 
@@ -452,11 +482,13 @@ def create_app(settings: Settings | None = None, bootstrap: bool = True) -> Flas
             loading_files=state.loading_files(),
             error_files=state.list_files("error_dir")[-10:][::-1],
             archive_count=len(state.list_files("archive_dir")),
+            skipped_count=len(state.list_files("skipped_dir")),
             converted_count=len(state.list_files("converted_dir")),
             formats_list=state.store.all(),
             loads=loads, total_rows=total_rows,
             supported=", ".join(SUPPORTED_EXTENSIONS),
             monitor=state.monitor_counts(),
+            active=state.active_summaries(),
         )
 
     # -- conversion ---------------------------------------------------------
@@ -520,14 +552,44 @@ def create_app(settings: Settings | None = None, bootstrap: bool = True) -> Flas
         truncate = request.form.get("truncate") == "on"
         files = [state.safe_path("loading_dir", name)] if name else None
         try:
-            results = state.loader.run(files=files, market=market, truncate=truncate)
+            results = state.loader.run(files=files, market=market, truncate=truncate,
+                                       include_no_trading_days=request.form.get("include_no_trading_days") == "on")
         except DatabaseError as exc:
             flash(f"database problem: {exc}", "error")
             return redirect(url_for("index"))
         if not results:
             flash("Nothing to load - the loading folder has no default-format .txt files", "info")
         for r in results:
-            flash(str(r), "success" if r.ok else "error")
+            flash(str(r), "success" if r.ok else "info" if r.skipped else "error")
+        return redirect(url_for("index"))
+
+    @app.post("/load-folder")
+    def load_folder():
+        folder = (request.form.get("folder") or "").strip()
+        if not folder:
+            flash("Please enter the folder to load", "error")
+            return redirect(url_for("index"))
+        patterns = [p.strip() for p in (request.form.get("patterns") or "").replace(",", ";").split(";") if p.strip()]
+        try:
+            summary = state.loader.load_folder(
+                folder, patterns=patterns or None, recursive=request.form.get("recursive") == "on",
+                market=(request.form.get("market") or "").strip() or None,
+                move_files=request.form.get("move") == "on", truncate=request.form.get("truncate") == "on",
+                stop_on_error=request.form.get("stop_on_error") == "on",
+                include_no_trading_days=request.form.get("include_no_trading_days") == "on")
+        except LoadError as exc:
+            flash(f"Bulk load failed: {exc}", "error")
+            return redirect(url_for("index"))
+        except DatabaseError as exc:
+            flash(f"database problem: {exc}", "error")
+            return redirect(url_for("index"))
+        flash(f"Bulk load {summary}", "success" if summary.ok else "error")
+        for r in [r for r in summary.results if r.skipped][:10]:
+            flash(str(r), "info")
+        for r in summary.failures[:10]:
+            flash(str(r), "error")
+        if len(summary.failures) > 10:
+            flash(f"... and {len(summary.failures) - 10} more failed file(s) - see the load history", "error")
         return redirect(url_for("index"))
 
     # -- upload / files -----------------------------------------------------
@@ -563,10 +625,14 @@ def create_app(settings: Settings | None = None, bootstrap: bool = True) -> Flas
     @app.post("/files/<key>/<path:name>/delete")
     def delete_file(key: str, name: str):
         path = state.safe_path(key, name)
-        path.unlink()
-        note = path.with_name(path.name + ".error.txt")
-        if note.exists():
-            note.unlink()
+        try:
+            path.unlink()
+            note = path.with_name(path.name + ".error.txt")
+            if note.exists():
+                note.unlink()
+        except OSError as exc:       # e.g. Windows: the file is open in another program
+            flash(f"Could not delete {name}: {exc}", "error")
+            return redirect(request.form.get("next") or url_for("index"))
         flash(f"Deleted {name} from {key.replace('_dir', '')} folder", "success")
         return redirect(request.form.get("next") or url_for("index"))
 
@@ -660,6 +726,8 @@ def create_app(settings: Settings | None = None, bootstrap: bool = True) -> Flas
             new = load_settings(s.config_file) if s.config_file else Settings()
             for key in ("conversion_dir", "converted_dir", "loading_dir", "archive_dir", "error_dir", "work_dir", "log_dir"):
                 setattr(new, key, path_of(key))
+            if "skipped_dir" in form:
+                new.skipped_dir = path_of("skipped_dir")
             if new.conversion_dir == new.loading_dir:
                 raise ConfigError("the conversion folder and the loading folder must be different")
             new.sqlite_path = path_of("sqlite_path")
@@ -673,10 +741,25 @@ def create_app(settings: Settings | None = None, bootstrap: bool = True) -> Flas
             new.default_market = (form.get("default_market") or "").strip()
             new.skip_bad_rows = form.get("skip_bad_rows") == "on"
             new.encoding = (form.get("encoding") or "utf-8-sig").strip()
+            if "date_from_filename_regex" in form:
+                new.date_from_filename_regex = (form.get("date_from_filename_regex") or "").strip()
+                re.compile(new.date_from_filename_regex)
+                new.skip_no_trading_days = form.get("skip_no_trading_days") == "on"
+            if "daily_table" in form:     # active tables / promotion (absent in older forms: keep as is)
+                new.daily_table = (form.get("daily_table") or "Stock_Daily").strip()
+                new.weekly_table = (form.get("weekly_table") or "Stock_Weekly").strip()
+                new.monthly_table = (form.get("monthly_table") or "Stock_Monthly").strip()
+                new.reject_market_closed_days = form.get("reject_market_closed_days") == "on"
+                new.check_price_range = form.get("check_price_range") == "on"
+                new.check_trading_window = form.get("check_trading_window") == "on"
+                new.check_completeness = form.get("check_completeness") == "on"
             if new.batch_size <= 0:
                 raise ConfigError("batch size must be > 0")
             if not new.stage_table:
                 raise ConfigError("staging table name must not be empty")
+            names = [new.stage_table, new.daily_table, new.weekly_table, new.monthly_table]
+            if len({n.lower() for n in names}) != len(names):
+                raise ConfigError("the staging, daily, weekly and monthly table names must differ")
             new.config_file = s.config_file or (base / "config.ini")
             new.base_dir = base
             new.ensure_folders()
@@ -710,6 +793,8 @@ def create_app(settings: Settings | None = None, bootstrap: bool = True) -> Flas
             return state.corrections.history(limit=limit)
         if kind == "history":
             return state.db.load_history(limit=limit, file_name=request.args.get("file") or None)
+        if kind == "promotions":
+            return state.promotions.history(limit=limit, procedure=request.args.get("procedure") or None)
         abort(404)
 
     def _monitor_page(kind: str, template: str, **extra):
@@ -777,6 +862,285 @@ def create_app(settings: Settings | None = None, bootstrap: bool = True) -> Flas
     @app.route("/api/corrections")
     def api_corrections():
         return _api_monitor("corrections")
+
+    @app.route("/api/promotions")
+    def api_promotions():
+        return _api_monitor("promotions")
+
+    # -- active tables / promotion ----------------------------------------------
+    @app.route("/promote")
+    def promote():
+        try:
+            summaries = state.promotions.summaries()
+            records = state.promotions.history(limit=_limit(20), procedure=request.args.get("procedure") or None)
+        except (sqlite3.Error, DatabaseError) as exc:
+            flash(f"database problem: {exc}", "error")
+            summaries, records = [], []
+        return render_template("promote.html", summaries=summaries, records=records, procedures=PROCEDURES,
+                               counts=state.monitor_counts(), args=request.args, limit=_limit(20))
+
+    @app.post("/promote")
+    def promote_run():
+        form = request.form
+        what = form.get("what", "all")
+        full = form.get("full") == "on"
+        filters = {k: (form.get(k) or "").strip() or None for k in ("source_file", "load_id", "ticker",
+                                                                    "date_from", "date_to")}
+        names = ("daily", "weekly", "monthly") if what == "all" else (what,)
+        if what not in ("daily", "weekly", "monthly", "all"):
+            abort(400)
+        try:
+            for name in names:
+                if name == "daily":
+                    r = state.promotions.promote_daily(full=full, **filters)
+                elif name == "weekly":
+                    r = state.promotions.promote_weekly(full=full, ticker=filters["ticker"])
+                else:
+                    r = state.promotions.promote_monthly(full=full, ticker=filters["ticker"])
+                flash(str(r), "success" if not r.rows_rejected else "info")
+                if r.rows_rejected:
+                    flash(f"{r.rows_rejected:,} staging row(s) were rejected by the validation - see the data "
+                          f"errors page, correct them and promote again", "error")
+        except PromotionError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("promote"))
+
+    @app.route("/active/<kind>")
+    def active_table(kind: str):
+        if kind not in ("daily", "weekly", "monthly"):
+            abort(404)
+        a = request.args
+        rows, error = [], None
+        try:
+            rows = state.promotions.fetch(kind, ticker=a.get("ticker"), date_from=a.get("from"),
+                                          date_to=a.get("to"), limit=_limit(100),
+                                          newest_first=a.get("order") != "asc",
+                                          incomplete_only=a.get("incomplete") == "1")
+            summary = state.promotions.summary(kind)
+        except PromotionError as exc:
+            error, summary = str(exc), None
+        except (sqlite3.Error, DatabaseError) as exc:
+            error, summary = f"database problem: {exc}", None
+        if a.get("json"):
+            return jsonify({"kind": kind, "count": len(rows), "records": rows, "error": error})
+        return render_template("active.html", kind=kind, rows=rows, summary=summary, error=error, args=a,
+                               limit=_limit(100), columns=list(rows[0].keys()) if rows else [])
+
+    # -- trading calendar (No_Trading_Day / Market) -----------------------------------
+    def _calendar_args():
+        markets = state.calendar.markets()
+        market = (request.args.get("market") or request.form.get("market") or "").strip().upper()
+        if not market and markets:
+            known = {m.market.upper() for m in markets}
+            preferred = [state.settings.default_market.upper(), "NASDAQ"]
+            market = next((m for m in preferred if m in known), None) or \
+                next((m.market for m in markets if m.is_active), markets[0].market)
+        try:
+            year = int(request.args.get("year") or request.form.get("year") or datetime.now().year)
+        except ValueError:
+            year = datetime.now().year
+        return markets, market, year
+
+    @app.route("/calendar")
+    def calendar_page():
+        try:
+            markets, market, year = _calendar_args()
+            show_all = request.args.get("all") == "1"
+            days = state.calendar.days(market, year, holidays_only=not show_all) if market else []
+            years = state.calendar.years_available(market) if market else []
+        except (sqlite3.Error, DatabaseError, CalendarError) as exc:
+            flash(f"database problem: {exc}", "error")
+            markets, market, year, days, years, show_all = [], "", datetime.now().year, [], [], False
+        market_years = {m.market: state.calendar.years_available(m.market) for m in markets}
+        return render_template("calendar.html", markets=markets, market=market, year=year, days=days, years=years,
+                               show_all=show_all, rule_sets=RULE_SETS, market_years=market_years,
+                               suggested_years=default_update_years(), args=request.args)
+
+    def _back_to_calendar(market: str | None = None, year: int | None = None):
+        params = {}
+        if market:
+            params["market"] = market
+        if year:
+            params["year"] = year
+        if request.form.get("all") == "1":
+            params["all"] = 1
+        return redirect(url_for("calendar_page", **params))
+
+    @app.post("/calendar/update")
+    def calendar_update():
+        try:
+            year = int(request.form.get("year") or 0)
+            markets = [m for m in request.form.getlist("markets") if m] or None
+            results = state.calendar.update_year(year, markets)
+        except (ValueError, CalendarError) as exc:
+            flash(f"Could not update the calendar: {exc}", "error")
+            return _back_to_calendar()
+        for r in results:
+            flash(str(r), "success")
+        if not results:
+            flash("No active market to update", "info")
+        return _back_to_calendar(markets[0] if markets else None, year)
+
+    @app.post("/calendar/days/add")
+    def calendar_day_add():
+        market = (request.form.get("market") or "").strip().upper()
+        try:
+            row = state.calendar.add_day(market, request.form.get("date") or "", request.form.get("reason") or "")
+        except CalendarError as exc:
+            flash(f"Could not add the closure: {exc}", "error")
+            return _back_to_calendar(market)
+        flash(f"{row.market} is closed on {row.trade_date}: {row.reason}", "success")
+        return _back_to_calendar(row.market, int(row.trade_date[:4]))
+
+    @app.post("/calendar/days/remove")
+    def calendar_day_remove():
+        market = (request.form.get("market") or "").strip().upper()
+        try:
+            row = state.calendar.remove_day(market, request.form.get("date") or "")
+        except CalendarError as exc:
+            flash(f"Could not remove the closure: {exc}", "error")
+            return _back_to_calendar(market)
+        flash(f"{row.market} trades on {row.trade_date} ({row.reason} removed)", "success")
+        return _back_to_calendar(row.market, int(row.trade_date[:4]))
+
+    @app.post("/calendar/markets/add")
+    def calendar_market_add():
+        try:
+            m = state.calendar.add_market(request.form.get("market") or "", request.form.get("name") or "",
+                                          request.form.get("rules") or "us")
+        except CalendarError as exc:
+            flash(f"Could not add the market: {exc}", "error")
+            return _back_to_calendar()
+        flash(f"Market {m.market} added ({RULE_SETS[m.rules]}) - generate its no-trading days below", "success")
+        return _back_to_calendar(m.market)
+
+    @app.post("/calendar/markets/<market>/toggle")
+    def calendar_market_toggle(market: str):
+        try:
+            current = state.calendar.get_market(market)
+            if current is None:
+                abort(404)
+            m = state.calendar.set_market_active(market, not current.is_active)
+        except CalendarError as exc:
+            flash(str(exc), "error")
+            return _back_to_calendar()
+        flash(f"Market {m.market} {'activated' if m.is_active else 'deactivated'}", "success")
+        return _back_to_calendar()
+
+    # -- stock symbols (Stock_Symbol) ---------------------------------------------
+    @app.route("/symbols")
+    def symbols_page():
+        a = request.args
+        try:
+            rows = state.symbols.find(a.get("ticker"), a.get("market"), missing_dates=a.get("missing") == "1",
+                                      suspicious=a.get("suspicious") == "1", limit=_limit(100))
+            counts = state.symbols.counts(a.get("market") or None)
+            markets = state.symbols.markets()
+        except (sqlite3.Error, DatabaseError) as exc:
+            flash(f"database problem: {exc}", "error")
+            rows, counts, markets = [], {}, []
+        edit_symbol = None
+        if a.get("edit"):
+            try:
+                edit_symbol = state.symbols.get(a["edit"], a.get("edit_market"))
+            except SymbolError as exc:
+                flash(str(exc), "error")
+        return render_template("symbols.html", rows=rows, counts=counts, markets=markets, args=a, limit=_limit(100),
+                               edit_symbol=edit_symbol)
+
+    @app.post("/symbols/save")
+    def symbol_save():
+        form = request.form
+        try:
+            s = state.symbols.set(form.get("ticker") or "", (form.get("market") or "").strip() or None,
+                                  first_trade_date=form.get("first_trade_date") or None,
+                                  last_trade_date=form.get("last_trade_date") or None,
+                                  name=form.get("name") or "", note=form.get("note") or "")
+        except SymbolError as exc:
+            flash(f"Could not save the symbol: {exc}", "error")
+            return redirect(url_for("symbols_page", ticker=form.get("ticker", "")))
+        flash(f"{s.ticker} ({s.market or 'no market'}): first trade {s.first_trade_date or '-'}, "
+              f"last trade {s.last_trade_date or '-'}", "success")
+        if s.data_before_listing:
+            flash(f"{s.ticker}: data loaded from {s.first_seen} is before the first trade date {s.first_trade_date} - "
+                  f"it is invalid and will be flagged / rejected", "info")
+        return redirect(url_for("symbols_page", ticker=s.ticker))
+
+    @app.post("/symbols/delete")
+    def symbol_delete():
+        try:
+            s = state.symbols.delete(request.form.get("ticker") or "", (request.form.get("market") or "").strip() or None)
+        except SymbolError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("symbols_page"))
+        flash(f"{s.ticker} ({s.market}) removed from the symbol table", "success")
+        return redirect(url_for("symbols_page"))
+
+    @app.post("/symbols/import")
+    def symbols_import():
+        f = request.files.get("file")
+        if f is None or not f.filename:
+            flash("Choose a CSV file to import", "error")
+            return redirect(url_for("symbols_page"))
+        name = Path(f.filename).name
+        if not _SAFE_NAME.match(name) or name.startswith("."):
+            abort(400)
+        target = state.settings.work_dir / f"symbols_{datetime.now():%Y%m%d_%H%M%S}_{name}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        f.save(target)
+        try:
+            result = state.symbols.import_csv(target, (request.form.get("market") or "").strip() or None,
+                                              display_name=name)
+        except SymbolError as exc:
+            flash(f"Import failed: {exc}", "error")
+            return redirect(url_for("symbols_page"))
+        finally:
+            try:
+                target.unlink()
+            except OSError:  # pragma: no cover
+                pass
+        flash(f"Imported {result}", "success" if not result.errors else "error")
+        for e in result.errors[:10]:
+            flash(e, "error")
+        return redirect(url_for("symbols_page"))
+
+    @app.route("/api/symbols")
+    def api_symbols():
+        a = request.args
+        try:
+            rows = state.symbols.find(a.get("ticker"), a.get("market"), missing_dates=a.get("missing") == "1",
+                                      suspicious=a.get("suspicious") == "1", limit=_limit(100))
+        except (sqlite3.Error, DatabaseError) as exc:
+            return jsonify({"error": str(exc), "records": []}), 503
+        return jsonify({"count": len(rows), "records": [asdict(r) for r in rows],
+                        "counts": state.symbols.counts(a.get("market") or None)})
+
+    @app.route("/api/no-trading-days")
+    def api_no_trading_days():
+        try:
+            markets, market, year = _calendar_args()
+            days = state.calendar.days(market, year, holidays_only=request.args.get("all") != "1")
+        except (sqlite3.Error, DatabaseError, CalendarError) as exc:
+            return jsonify({"error": str(exc), "records": []}), 503
+        return jsonify({"market": market, "year": year, "count": len(days),
+                        "markets": [asdict(m) for m in markets],
+                        "records": [{**asdict(d), "weekday": d.weekday} for d in days]})
+
+    @app.route("/api/active/<kind>")
+    def api_active(kind: str):
+        if kind not in ("daily", "weekly", "monthly"):
+            abort(404)
+        a = request.args
+        try:
+            rows = state.promotions.fetch(kind, ticker=a.get("ticker"), date_from=a.get("from"),
+                                          date_to=a.get("to"), limit=_limit(100),
+                                          newest_first=a.get("order") != "asc",
+                                          incomplete_only=a.get("incomplete") == "1")
+        except PromotionError as exc:
+            return jsonify({"error": str(exc), "records": []}), 400
+        except (sqlite3.Error, DatabaseError) as exc:
+            return jsonify({"error": str(exc), "records": []}), 503
+        return jsonify({"kind": kind, "table": state.promotions.tables[kind], "count": len(rows), "records": rows})
 
     # -- data correction --------------------------------------------------------
     def _form_values(source) -> dict[str, str]:

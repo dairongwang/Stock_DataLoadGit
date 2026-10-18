@@ -32,7 +32,7 @@ import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from .config import Settings
 
@@ -177,6 +177,36 @@ class AuditLogger:
                     '("LoggedAt","Level","Component","Event","SourceFile","LoadId","Message","Details") '
                     'VALUES (?,?,?,?,?,?,?,?)',
                     (_now(), level, component, event, file_name, load_id, message or None, _as_json(details)))
+
+    def log_many(self, component: str, entries: Iterable[Mapping[str, Any]]) -> int:
+        """Record many activities in ONE transaction (never raises).
+
+        Each entry is a dict with the keyword arguments of :meth:`log`
+        (``event``, ``message``, ``level``, ``file_name``, ``load_id``,
+        ``details``).  Used where one operation produces hundreds of entries
+        (e.g. one ALERT per missing stock of a bulk load) - one connection and
+        one commit instead of one per entry.  Returns the number written.
+        """
+        rows = []
+        for e in entries:
+            level = str(e.get("level", "INFO")).upper()
+            level = level if level in LOG_LEVELS else "INFO"
+            rows.append((_now(), level, component, e["event"], e.get("file_name"), e.get("load_id"),
+                         e.get("message") or None, _as_json(e.get("details"))))
+        if not rows:
+            return 0
+        log.debug("[%s] %d log entries written in one batch", component, len(rows))
+        try:
+            with self.connection() as conn:
+                if not self._tables_ready:
+                    self.ensure_tables(conn)
+                conn.executemany(f'INSERT INTO "{APP_LOG_TABLE}" '
+                                 '("LoggedAt","Level","Component","Event","SourceFile","LoadId","Message","Details") '
+                                 'VALUES (?,?,?,?,?,?,?,?)', rows)
+        except (sqlite3.Error, OSError):
+            log.exception("could not write audit records (continuing)")
+            return 0
+        return len(rows)
 
     def error(self, component: str, operation: str, error: BaseException | str,
               file_name: str | None = None, load_id: str | None = None,
