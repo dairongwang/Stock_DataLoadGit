@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Create an account{% endblock %}
+{% block content %}
+<div class="card" style="max-width:560px;margin:30px auto">
+  <h1>Create an account</h1>
+  <p class="muted">An account lets you keep several API keys, top them up, watch your usage and find every receipt in one place. Buying tokens works without one, too.</p>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  {% if oauth_providers %}
+  <div class="oauth">
+    {% for name, p in oauth_providers.items() %}<a class="btn secondary oauth-{{ name }}" href="{{ url_for('oauth_start', provider=name, next='') }}">Continue with {{ p.label }}</a>{% endfor %}
+    {% if oauth_fake %}<div class="muted" style="font-size:12px;width:100%">(test mode - a built-in stub stands in for {{ oauth_providers.values()|map(attribute='label')|join(', ') }})</div>{% endif %}
+  </div>
+  <div class="or"><span>or</span></div>
+  {% endif %}
+  <form method="post" action="{{ url_for('signup') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <div class="form-grid" style="grid-template-columns:170px 1fr">
+      <label for="email">E-mail</label><input type="email" id="email" name="email" value="{{ form.get('email', '') }}" required autofocus autocomplete="email">
+      <label for="display_name">Name (optional)</label><input type="text" id="display_name" name="display_name" value="{{ form.get('display_name', '') }}" autocomplete="name" maxlength="80">
+      <label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="new-password" minlength="8">
+      <span class="help">at least 8 characters</span>
+      <label for="password_confirm">Repeat password</label><input type="password" id="password_confirm" name="password_confirm" required autocomplete="new-password">
+      <label for="order_ref">Guest order reference</label><input type="text" id="order_ref" name="order_ref" value="{{ form.get('order_ref', '') }}" placeholder="optional - ORD-… of a purchase made with this e-mail" class="mono">
+      <span class="help">already bought tokens as a guest with this e-mail address? Enter one of your order references to link those keys and tokens to the new account</span>
+    </div>
+    <div class="actions"><button type="submit">Create account</button><a class="btn secondary" href="{{ url_for('login') }}">I have an account</a></div>
+  </form>
+</div>
+{% endblock %}

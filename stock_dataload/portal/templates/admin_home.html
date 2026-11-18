@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Admin{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<h1>Administration</h1>
+{% include "_admin_nav.html" %}
+<div class="stats" style="grid-template-columns:repeat(6,1fr)">
+  <div class="card tight"><span class="stat">{{ '{:,}'.format(stats.customers) }}<small>customers · {{ stats.accounts }} accounts ({{ stats.admins }} admin) · {{ stats.guests }} guests</small></span></div>
+  <div class="card tight"><span class="stat">{{ '{:,}'.format(stats.active_keys) }}<small>active keys of {{ stats.keys }}</small></span></div>
+  <div class="card tight"><span class="stat">{{ '{:,.2f}'.format(stats.revenue / 100) }}<small>{{ stats.currency }} revenue · {{ stats.paid_orders }} paid orders{% if stats.pending_orders %} · {{ stats.pending_orders }} pending{% endif %}</small></span></div>
+  <div class="card tight"><span class="stat">{{ '{:,}'.format(stats.tokens_sold) }}<small>tokens sold / granted</small></span></div>
+  <div class="card tight"><span class="stat">{{ '{:,}'.format(stats.tokens_used) }}<small>tokens used · {{ '{:,}'.format(stats.tokens_outstanding) }} outstanding</small></span></div>
+  <div class="card tight"><span class="stat">{{ '{:,}'.format(stats.requests) }}<small>API requests · {{ stats.refused_requests }} refused</small></span></div>
+</div>
+{% if catalog %}
+<p class="muted" style="font-size:13px">Data on sale: {% for kind in kinds %}{{ kind }} {{ '{:,}'.format(catalog.kinds[kind].rows) }} rows ({{ catalog.kinds[kind].years|sort|join(', ') }}){% if not loop.last %} · {% endif %}{% endfor %}{% if catalog.markets %} · markets {{ catalog.markets|join(', ') }}{% endif %}</p>
+{% endif %}
+<div class="grid2">
+<div class="card">
+  <h3 style="margin-top:0">Latest orders</h3>
+  {% if orders %}<table>
+    <tr><th>Order</th><th>When</th><th>Customer</th><th class="num">Tokens</th><th class="num">Amount</th><th>Status</th></tr>
+    {% for o in orders %}<tr><td class="mono">{{ o.order_ref }}</td><td class="muted">{{ (o.paid_at or o.created_at)[5:16] }}</td><td>{{ o.email }}</td><td class="num">{{ '{:,}'.format(o.tokens) }}</td><td class="num">{{ o.price }}</td><td><span class="badge {{ 'ok' if o.is_paid else 'warn' if o.status == 'pending' else 'err' }}">{{ o.status }}</span></td></tr>{% endfor %}
+  </table>{% else %}<p class="muted">No orders yet.</p>{% endif %}
+</div>
+<div class="card">
+  <h3 style="margin-top:0">Latest API requests</h3>
+  {% if usage %}<table>
+    <tr><th>When</th><th>Key</th><th>Data</th><th>Tickers</th><th>Year</th><th class="num">Tokens</th><th></th></tr>
+    {% for u in usage %}<tr><td class="muted">{{ u.requested_at[5:16] }}</td><td class="mono">{{ key_prefixes.get(u.api_key_id, u.api_key_id) }}</td><td>{{ u.endpoint }}</td><td class="mono">{{ (u.tickers or '')[:24] }}</td><td>{{ u.year or '' }}</td><td class="num">{{ u.tokens }}</td><td>{% if u.status != 'ok' %}<span class="badge err">refused</span>{% endif %}</td></tr>{% endfor %}
+  </table>{% else %}<p class="muted">No requests yet.</p>{% endif %}
+</div>
+</div>
+<div class="card">
+  <h3 style="margin-top:0">Recent portal activity</h3>
+  {% if audit_log %}<table>
+    <tr><th>When</th><th>Level</th><th>Event</th><th class="wrap">Message</th></tr>
+    {% for l in audit_log %}<tr><td class="muted">{{ l.logged_at[5:16] }}</td><td><span class="badge {{ 'warn' if l.level == 'WARNING' else 'err' if l.level == 'ERROR' else '' }}">{{ l.level }}</span></td><td class="mono">{{ l.event }}</td><td class="wrap">{{ l.message }}</td></tr>{% endfor %}
+  </table>{% else %}<p class="muted">Nothing logged yet.</p>{% endif %}
+</div>
+{% endblock %}

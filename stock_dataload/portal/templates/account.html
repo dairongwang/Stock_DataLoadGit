@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Your account{% endblock %}
+{% block content %}
+<h1>Your account</h1>
+<p class="muted">{{ customer.email }}{% if customer.display_name %} · {{ customer.display_name }}{% endif %} · customer since {{ customer.created_at[:10] }}
+  · <a href="{{ url_for('security') }}">security &amp; two-factor authentication</a>{% if customer.is_admin %} · <a href="{{ url_for('admin_home') }}">admin pages</a>{% endif %}</p>
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+{% if new_key %}
+<div class="card" style="border-color:#86efac;background:#f0fdf4">
+  <h3 style="margin-top:0">New key {{ new_key[0].display }}{% if new_key[0].label %} ({{ new_key[0].label }}){% endif %}</h3>
+  <div class="keybox" id="apikey">{{ new_key[1] }}</div>
+  <p style="margin:10px 0 0"><b>Copy it now - it is shown only this once.</b></p>
+  <div class="actions"><button type="button" class="small secondary" onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('apikey').textContent).then(function(){document.getElementById('copied').textContent='copied';})">Copy key</button><span id="copied" class="ok"></span></div>
+</div>
+{% endif %}
+
+<div class="stats">
+  <div class="card tight"><span class="stat">{{ '{:,}'.format(balance) }}<small>tokens available</small></span></div>
+  <div class="card tight"><span class="stat">{{ '{:,}'.format(totals.requests) }}<small>requests served</small></span></div>
+  <div class="card tight"><span class="stat">{{ '{:,}'.format(totals.tokens) }}<small>tokens used</small></span></div>
+  <div class="card tight"><span class="stat">{{ '{:,}'.format(totals.rows) }}<small>rows delivered</small></span></div>
+</div>
+
+<div class="card">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <h3 style="margin:0">API keys</h3>
+    <a class="btn small" href="{{ url_for('buy') }}" style="margin-left:auto">Buy tokens</a>
+    <form method="post" action="{{ url_for('account_key_new') }}" class="inline" style="display:flex;gap:6px;align-items:center">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="text" name="label" placeholder="label (optional)" maxlength="60" style="width:180px">
+      <button class="small secondary" type="submit">+ New key</button>
+    </form>
+  </div>
+  {% if keys %}
+  <table>
+    <tr><th>Key</th><th>Label</th><th class="num">Tokens left</th><th class="num">Purchased</th><th class="num">Used</th><th>Status</th><th>Last used</th><th></th></tr>
+    {% for k in keys %}
+    <tr>
+      <td class="mono">{{ k.display }}</td>
+      <td><form method="post" action="{{ url_for('account_key_label', api_key_id=k.api_key_id) }}" class="inline" style="display:flex;gap:4px"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="text" name="label" value="{{ k.label or '' }}" maxlength="60" style="width:150px;padding:3px 6px;font-size:12px"><button class="small secondary" type="submit" title="save label">✓</button></form></td>
+      <td class="num"><b>{{ '{:,}'.format(k.balance) }}</b></td>
+      <td class="num">{{ '{:,}'.format(k.tokens_purchased) }}</td>
+      <td class="num">{{ '{:,}'.format(k.tokens_used) }}</td>
+      <td>{% if k.is_active %}<span class="badge ok">active</span>{% else %}<span class="badge err">revoked</span>{% endif %}</td>
+      <td class="muted">{{ k.last_used_at or '-' }}</td>
+      <td style="white-space:nowrap">
+        {% if k.is_active %}
+        <form method="post" action="{{ url_for('account_key_rotate', api_key_id=k.api_key_id) }}" class="inline" onsubmit="return confirm('Rotate key {{ k.display }}? The current secret stops working immediately.')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="small secondary" type="submit">Rotate</button></form>
+        <form method="post" action="{{ url_for('account_key_revoke', api_key_id=k.api_key_id) }}" class="inline" onsubmit="return confirm('Revoke key {{ k.display }}? {{ k.balance }} unused token(s) on it become unusable.')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="small danger" type="submit">Revoke</button></form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No key yet - <a href="{{ url_for('buy') }}">buy a token pack</a> (a key is created with it) or create an empty key and top it up later.</p>{% endif %}
+</div>
+
+<div class="grid2">
+<div class="card">
+  <h3 style="margin-top:0">Orders</h3>
+  {% if orders %}
+  <table>
+    <tr><th>Order</th><th>Date</th><th>Pack</th><th class="num">Tokens</th><th class="num">Amount</th><th>Status</th></tr>
+    {% for o in orders %}
+    <tr>
+      <td class="mono"><a href="{{ url_for('order_page', ref=o.order_ref) }}">{{ o.order_ref }}</a></td>
+      <td class="muted">{{ (o.paid_at or o.created_at)[:16] }}</td>
+      <td>{{ o.pack }}{% if o.is_guest %} <span class="badge">guest</span>{% endif %}</td>
+      <td class="num">{{ '{:,}'.format(o.tokens) }}</td>
+      <td class="num">{{ o.price }}</td>
+      <td>{% if o.is_paid %}<span class="badge ok">paid</span>{% elif o.status == 'pending' %}<span class="badge warn">pending</span>{% else %}<span class="badge err">{{ o.status }}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No orders yet.</p>{% endif %}
+</div>
+<div class="card">
+  <h3 style="margin-top:0">Recent requests</h3>
+  {% if usage %}
+  <table>
+    <tr><th>When</th><th>Data</th><th>Tickers</th><th>Year</th><th class="num">Tokens</th><th class="num">Rows</th><th></th></tr>
+    {% for u in usage %}
+    <tr class="{{ '' if u.status == 'ok' else 'err' }}">
+      <td class="muted">{{ u.requested_at[5:16] }}</td><td>{{ u.endpoint }}</td><td class="mono">{{ (u.tickers or '')[:30] }}</td><td>{{ u.year or '' }}</td>
+      <td class="num">{{ u.tokens }}</td><td class="num">{{ '{:,}'.format(u.rows) }}</td>
+      <td>{% if u.status != 'ok' %}<span class="badge err" title="{{ u.status }}">refused</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No requests yet. Try <code>GET {{ base_url() }}/api/v1/daily?ticker=AAPL&amp;year={{ sample_year }}</code> with one of your keys.</p>{% endif %}
+</div>
+</div>
+
+<div class="card" style="max-width:560px" id="password">
+  <h3 style="margin-top:0">Change password</h3>
+  {% if not customer.has_password %}<p class="muted">This account signs in through a connected account and has no password yet. Sign out and use <a href="{{ url_for('forgot_password') }}">Forgot your password</a> to set one.</p>{% else %}
+  <form method="post" action="{{ url_for('account_password') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <div class="form-grid" style="grid-template-columns:160px 1fr">
+      <label for="current_password">Current password</label><input type="password" id="current_password" name="current_password" required autocomplete="current-password">
+      <label for="new_password">New password</label><input type="password" id="new_password" name="new_password" required minlength="8" autocomplete="new-password">
+      <label for="confirm_password">Repeat new password</label><input type="password" id="confirm_password" name="confirm_password" required autocomplete="new-password">
+    </div>
+    <div class="actions"><button type="submit" class="secondary">Change password</button></div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

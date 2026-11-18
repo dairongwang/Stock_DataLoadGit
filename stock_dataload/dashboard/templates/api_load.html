@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+{% block title %}API loading{% endblock %}
+{% block content %}
+{% set job = status.job %}
+<h1>API loading <span class="muted" style="font-size:13px;font-weight:400">EOD API &rarr; {{ settings.eod_stage_table }}, one call per stock - or one call for a whole day of a market (bulk)</span></h1>
+<p class="muted">Loads end-of-day prices from the EOD API (<code>{{ endpoint }}<i>SYMBOL</i>?api_token=***&amp;fmt=json</code>) and puts every answer
+straight into <code>{{ settings.eod_stage_table }}</code> - no files. A failed call is repeated up to {{ settings.eod_api_retries }} times per stock
+(network problems, timeouts, 429, 5xx); an unknown symbol (404) is skipped; a refused token (401 / 402 / 403) or
+{{ settings.eod_max_consecutive_failures }} failures in a row stop the load - it can be resumed. Then promote the data into
+<code>{{ settings.daily_table }}</code> (tick <i>promote</i> below, or on the <a href="{{ url_for('promote') }}">Active tables</a> page).</p>
+
+<div class="monitor-strip" style="margin-bottom:14px">
+  <span>Gateway: {% if settings.eod_api_gateway == 'fake' %}<span class="badge warn">fake (built-in stub)</span>{% else %}<span class="badge ok">live API</span>{% endif %}</span>
+  <span>API token: {% if token_ok %}<span class="badge ok">{{ token_source }}</span>{% else %}<span class="badge err" title="set $STOCK_DATALOAD_EOD_API_TOKEN - or use the built-in stub to try it out">{{ token_source }} - live calls will be refused</span>{% endif %}</span>
+  <span id="quota-strip" title="the bulk load of all stocks of a market may run at most {{ market_load_limit }} times a day per market">Whole-market loads today:
+    {% for m, q in quotas.items() %}<span class="badge {{ 'err' if q.exhausted else 'warn' if q.used else 'ok' }}">{{ m }} {{ q.used }}/{{ q.limit }}</span> {% else %}<span class="muted">none (max {{ market_load_limit }} per market)</span>{% endfor %}</span>
+  {% set fq = limits.file_quota %}
+  <span id="file-quota-strip" title="loading from a text file may run at most {{ fq.limit }} times a day">Text-file loads today:
+    <span class="badge {{ 'err' if fq.exhausted else 'warn' if fq.used else 'ok' }}">{{ fq.used }}/{{ fq.limit }}</span></span>
+  <span id="stock-limit-strip" title="a stock is loaded at most {{ limits.stock_limit }} times a day">Stocks at their daily limit ({{ limits.stock_limit }} loads):
+    {% if limits.stocks_at_limit %}<span class="badge warn">{{ limits.stocks_at_limit|length }}</span>{% else %}<span class="badge ok">none</span>{% endif %}</span>
+  <span class="muted">retries {{ settings.eod_api_retries }} &middot; backoff {{ '%g' % settings.eod_api_retry_backoff }}s &middot; pause {{ '%g' % settings.eod_request_pause }}s &middot; timeout {{ settings.eod_api_timeout }}s</span>
+</div>
+
+<div class="card" id="job-card" data-status-url="{{ url_for('api_load_status') }}" data-run-url="{{ url_for('api_load_run', run_id='RUN_ID') }}"
+     data-active="{{ '1' if job and job.active else '' }}">
+  <div class="toolbar" style="justify-content:space-between">
+    <h2 style="margin:0">Current load</h2>
+    {% if can('operator') %}
+    <form method="post" action="{{ url_for('api_load_stop') }}" class="inline" id="stop-form"{% if not (job and job.active) %} hidden{% endif %}>
+      <button type="submit" class="danger small" id="stop-button">Stop after the current stock</button>
+    </form>
+    {% endif %}
+  </div>
+  <div id="job-empty" class="muted"{% if job %} hidden{% endif %}>No API load has run since the dashboard started - start one below.</div>
+  <div id="job-body"{% if not job %} hidden{% endif %}>
+    <div class="kv" style="margin:8px 0">
+      <span class="muted">load</span><span id="job-title">{{ job.title if job else '' }}</span>
+      <span class="muted">status</span><span><span id="job-status" class="badge {% if job %}{{ 'warn' if job.active else 'ok' if job.run_status == 'completed' and job.status != 'failed' else 'err' }}{% endif %}">{{ job.status if job else '' }}</span>
+        <span id="job-run-status" class="muted">{{ job.run_status or '' if job else '' }}</span></span>
+      <span class="muted">run</span><span id="job-run">{% if job and job.run_id %}<a href="{{ url_for('api_load_run', run_id=job.run_id) }}" class="mono">{{ job.run_id }}</a>{% endif %}</span>
+      <span class="muted">started</span><span id="job-started">{{ job.started_at if job else '' }}{% if job and job.started_by %} by {{ job.started_by }}{% endif %}</span>
+    </div>
+    <div class="progress" title="stocks handled"><div class="progress-bar" id="job-bar" style="width:{{ job.percent if job else 0 }}%"></div></div>
+    <div class="job-counts">
+      <span><b id="job-done">{{ '{:,}'.format(job.done) if job else 0 }}</b> / <b id="job-total">{{ '{:,}'.format(job.total) if job else 0 }}</b> stocks</span>
+      <span class="ok"><b id="job-loaded">{{ job.loaded if job else 0 }}</b> loaded</span>
+      <span><b id="job-rows">{{ '{:,}'.format(job.rows) if job else 0 }}</b> rows</span>
+      <span class="muted"><b id="job-nodata">{{ job.no_data if job else 0 }}</b> without data</span>
+      <span class="err"><b id="job-failed">{{ job.failed if job else 0 }}</b> failed</span>
+      <span class="muted"><b id="job-skipped">{{ job.skipped if job else 0 }}</b> skipped</span>
+      <span class="muted"><b id="job-calls">{{ job.api_calls if job else 0 }}</b> API calls</span>
+    </div>
+    <div class="job-log" id="job-log" aria-live="polite">{% if job %}{% for l in job.log %}<div class="log-{{ l.level }}"><span class="muted">{{ l.at }}</span> {{ l.text }}</div>{% endfor %}{% endif %}</div>
+  </div>
+</div>
+
+{% if can('operator') %}
+<div class="card">
+  <h2>Start a load</h2>
+  <form method="post" action="{{ url_for('api_load_start') }}" enctype="multipart/form-data" id="load-form" data-lists='{{ lists_json|tojson }}'
+        data-quotas='{{ quotas_json|tojson }}' data-limit="{{ market_load_limit }}"
+        data-file-quota='{{ limits.file_quota.as_dict()|tojson }}' data-max-file-symbols="{{ limits.max_file_symbols }}"
+        data-stock-limit="{{ limits.stock_limit }}" data-stocks-at-limit='{{ limits.stocks_at_limit|tojson }}'
+        data-bulk-quota-url="{{ url_for('api_load_bulk_quota') }}"
+        data-bulk-quota='{{ (bulk_quota.as_dict() if bulk_quota else {})|tojson }}'>
+    {% set mode = form.get('mode', 'symbols') %}
+    <div class="monitor-nav mode-tabs" role="tablist">
+      <label class="{{ 'active' if mode == 'symbols' }}"><input type="radio" name="mode" value="symbols" {% if mode == 'symbols' %}checked{% endif %}> Selected stocks</label>
+      <label class="{{ 'active' if mode == 'market' }}"><input type="radio" name="mode" value="market" {% if mode == 'market' %}checked{% endif %}> Whole market</label>
+      <label class="{{ 'active' if mode == 'file' }}"><input type="radio" name="mode" value="file" {% if mode == 'file' %}checked{% endif %}> From a text file</label>
+      <label class="{{ 'active' if mode == 'bulk' }}"><input type="radio" name="mode" value="bulk" {% if mode == 'bulk' %}checked{% endif %}> One day, all stocks</label>
+    </div>
+
+    <div class="form-grid">
+      <label for="market" class="not-bulk">Market</label>
+      <span class="not-bulk">
+        <select name="market" id="market">
+          {% for m in lists %}<option value="{{ m.market }}" {% if form.get('market', 'NYSE') == m.market %}selected{% endif %}>{{ m.market }} ({{ '{:,}'.format(m.codes) }} listed)</option>{% endfor %}
+          <option value="" {% if lists and form.get('market') == '' %}selected{% endif %}>another market ...</option>
+        </select>
+        <input type="text" name="market_other" id="market_other" value="{{ form.get('market_other', '' if lists else 'NYSE') }}" placeholder="market code, e.g. NASDAQ, LSE" style="width:180px">
+      </span>
+      <div class="help not-bulk">the market of the stocks: the run is registered under it and promotion puts the stocks into it. A market without a list in {{ settings.eod_symbol_stage_table }} gets its list from the API first.</div>
+
+      <label for="symbols" class="mode-symbols">Stocks</label>
+      <textarea name="symbols" id="symbols" rows="3" class="mode-symbols" placeholder="stock symbols separated by commas, e.g. HD, JNJ, JPM, PFE">{{ form.get('symbols', '') }}</textarea>
+      <div class="help mode-symbols">one API call per stock; line breaks and blanks work as separators too. A stock is loaded
+        at most <b>{{ limits.stock_limit }}</b> times a day - one that reached it is skipped (not called).</div>
+
+      <label class="mode-market">Symbol types</label>
+      <span class="mode-market" id="types-box" data-default="{{ settings.eod_market_types|join('|') }}">
+        <span class="muted" id="types-none">the market's list is loaded from the API first - types: {{ settings.eod_market_types|join(', ') or 'every type' }}</span>
+      </span>
+      <label class="mode-market"></label>
+      <span class="mode-market"><input type="checkbox" name="all_types" id="all_types" {% if form.get('all_types') == 'on' %}checked{% endif %}> every type (ETF, FUND, Preferred Stock, ...)
+        &nbsp; <input type="checkbox" name="refresh_list" {% if form.get('refresh_list') == 'on' %}checked{% endif %}> request the market's symbol list from the API again first</span>
+      <label class="mode-market">Daily limit</label>
+      <span class="mode-market" id="quota-line">{% set chosen_market = form.get('market', 'NYSE') %}{% set q = quotas.get(chosen_market) %}
+        at most <b>{{ market_load_limit }}</b> whole-market loads per market and day -
+        <span id="quota-count">{% if q %}{{ chosen_market }}: {{ q.used }} of {{ q.limit }} used today{% else %}{{ chosen_market }}: 0 of {{ market_load_limit }} used today{% endif %}</span>
+        <span class="muted">(selected stocks, text files and resuming a run do not count)</span></span>
+      <label for="limit" class="mode-market">Only the first</label>
+      <span class="mode-market"><input type="number" name="limit" id="limit" min="1" value="{{ form.get('limit', '') }}" style="width:110px"> stocks <span class="muted">(empty = all; try a few first)</span> &nbsp; <b id="market-count" class="muted"></b></span>
+
+      <label for="file" class="mode-file">Text file</label>
+      <input type="file" name="file" id="file" accept=".txt,.csv,text/plain,text/csv" class="mode-file">
+      <div class="help mode-file">stock symbols separated by commas, e.g. <code>HD, JNJ, JPM, PFE</code> (at most 1 MB)</div>
+      <label class="mode-file">Limits</label>
+      <span class="mode-file" id="file-line">at most <b>{{ limits.max_file_symbols }}</b> stock symbols per file and
+        <b>{{ limits.file_load_limit }}</b> text-file loads a day - <span id="file-quota-count">{{ fq.used }} of {{ fq.limit }} used today</span>
+        <b id="file-count" class="muted"></b></span>
+
+      <label for="bulk_market" class="mode-bulk">Exchange</label>
+      <span class="mode-bulk"><input type="text" name="bulk_market" id="bulk_market" value="{{ form.get('bulk_market', 'US') }}" style="width:120px" placeholder="US">
+        <span class="muted">US = every US exchange (NYSE, NASDAQ, ...); or LSE, XETRA, ...</span></span>
+      <label for="bulk_date" class="mode-bulk">Trading day</label>
+      <span class="mode-bulk"><input type="date" name="bulk_date" id="bulk_date" value="{{ form.get('bulk_date', '') }}" max="{{ now.date().isoformat() }}" style="width:170px">
+        <span class="muted">(empty = the API's last trading day)</span>
+        &nbsp; <select name="bulk_fmt" id="bulk_fmt">{% for f in ('json', 'csv') %}<option value="{{ f }}" {% if form.get('bulk_fmt', settings.eod_bulk_fmt) == f %}selected{% endif %}>{{ f }}</option>{% endfor %}</select>
+        <span class="muted">format</span></span>
+      <div class="help mode-bulk">ONE API call: <code>{{ settings.eod_bulk_url }}<i>EXCHANGE</i>?api_token=***&amp;fmt=json&amp;date=YYYY-MM-DD</code> - every
+        record goes into {{ settings.eod_stage_table }} as <code>CODE.EXCHANGE</code> (e.g. <code>MSFT.US</code>). It counts as a whole-market load
+        (at most {{ market_load_limit }} a day per exchange); stocks loaded {{ limits.stock_limit }} times today are skipped.</div>
+      <label class="mode-bulk">Calls</label>
+      <span class="mode-bulk" id="bulk-quota-line">at most <b>3</b> calls of the bulk endpoint for the same exchange and trading day -
+        <span id="bulk-quota-count">{% if bulk_quota %}{{ bulk_quota.market }} {{ bulk_quota.trade_date }}: {{ bulk_quota.used }} of {{ bulk_quota.limit }} used{% endif %}</span>
+        <span class="muted">(every call counts - also with stocks chosen, failed ones; an empty day = the latest trading day)</span></span>
+      <label for="bulk_symbols" class="mode-bulk">Only these stocks</label>
+      <input type="text" name="bulk_symbols" id="bulk_symbols" class="mode-bulk" value="{{ form.get('bulk_symbols', '') }}" placeholder="optional, e.g. MSFT, HD, JNJ - then it is no whole-market load">
+      <label class="mode-bulk">Checks</label>
+      <span class="mode-bulk"><input type="checkbox" name="bulk_force" id="bulk_force" {% if form.get('bulk_force') == 'on' %}checked{% endif %}> call the API even if the exchange does not trade that day
+        &nbsp; <input type="checkbox" name="bulk_strict" {% if form.get('bulk_strict') == 'on' %}checked{% endif %}> load nothing if a record is invalid
+        <span class="muted">(default: load the valid records, reject the others into Data errors)</span></span>
+
+      <label class="not-bulk">Dates</label>
+      <span class="not-bulk"><input type="text" name="date_from" value="{{ form.get('date_from', '') }}" placeholder="from YYYY-MM-DD" style="width:150px">
+        <input type="text" name="date_to" value="{{ form.get('date_to', '') }}" placeholder="to YYYY-MM-DD" style="width:150px"> <span class="muted">(empty = everything the API has)</span></span>
+      <label>Afterwards</label>
+      <span><input type="checkbox" name="promote" {% if form.get('promote', 'on') == 'on' %}checked{% endif %}> promote the loaded stocks into {{ settings.daily_table }} (promote eod, adjusted prices)
+        &nbsp; <input type="checkbox" name="aggregates" {% if form.get('aggregates') == 'on' %}checked{% endif %}> then weekly / monthly</span>
+      <label class="not-bulk">Invalid records</label>
+      <span class="not-bulk"><input type="checkbox" name="skip_bad_rows" {% if form.get('skip_bad_rows') == 'on' %}checked{% endif %}> load the valid records of an answer with invalid ones (default: the stock is not loaded)</span>
+    </div>
+
+    <details class="details" style="margin-top:12px"{% if form.get('fake') == 'on' or settings.eod_api_gateway == 'fake' %} open{% endif %}>
+      <summary>Testing without the API (built-in stub)</summary>
+      <div class="form-grid" style="margin-top:8px">
+        <label>Stub</label>
+        <span><input type="checkbox" name="fake" {% if form.get('fake') == 'on' or settings.eod_api_gateway == 'fake' %}checked{% endif %}> use the built-in stub - <b>invented prices</b> per symbol, no network, no token</span>
+        <label for="fake_faults">Simulated failures</label>
+        <input type="text" name="fake_faults" id="fake_faults" value="{{ form.get('fake_faults', '') }}" placeholder="e.g. HD:503x2, JNJ:404, JPM:timeout, rate=0.05" class="mono">
+        <div class="help">SYMBOL:KIND[xN] with KIND 500 502 503 504 429 timeout reset badjson truncated (repeated) or 400 401 402 403 404 empty badrecord; rate=0.05 fails 5% of all calls</div>
+        <label>Real data</label>
+        <span><input type="checkbox" name="allow_fake_data" {% if form.get('allow_fake_data') == 'on' %}checked{% endif %}> allow writing invented prices into a staging table that holds real API data <span class="err">(not for production data)</span></span>
+      </div>
+    </details>
+
+    {% set q = quotas.get(form.get('market', 'NYSE')) %}
+    <div id="quota-block" class="flash error" role="alert"{% if not (form.get('mode') == 'market' and q and q.exhausted) %} hidden{% endif %}>
+      <b>Daily limit reached.</b> <span id="quota-block-text">{% if q and q.exhausted %}{{ q.refusal() }}{% endif %}</span>
+    </div>
+    <div id="file-block" class="flash error" role="alert"{% if not (form.get('mode') == 'file' and fq.exhausted) %} hidden{% endif %}>
+      <b id="file-block-title">Daily limit reached.</b> <span id="file-block-text">{% if fq.exhausted %}{{ fq.refusal() }}{% endif %}</span>
+    </div>
+    <div id="bulk-call-block" class="flash error" role="alert" hidden>
+      <b>Call limit reached.</b> <span id="bulk-call-block-text"></span>
+    </div>
+    <div id="bulk-notice" class="flash error" role="alert" hidden>
+      <b id="bulk-notice-title">No trading day.</b> <span id="bulk-notice-text"></span>
+    </div>
+    <div id="stock-notice" class="flash warning" role="status" hidden>
+      <b id="stock-notice-title">Daily limit per stock.</b> <span id="stock-notice-text"></span>
+    </div>
+    <div class="actions">
+      <button type="submit" id="start-button" {% if job and job.active %}disabled title="an API load is running"{% endif %}>Start the load</button>
+      <span class="muted" id="start-note">{% if job and job.active %}an API load is running - one at a time{% endif %}</span>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<div class="card" id="schedules">
+  <div class="toolbar" style="justify-content:space-between">
+    <h2 style="margin:0">Daily schedule <span class="muted" style="font-weight:400;font-size:12px">One day, all stocks - once per trading day at a set time</span></h2>
+    <span class="muted" id="scheduler-state">{% if scheduler.running %}<span class="badge ok">scheduler running</span> checks every {{ scheduler.interval|int }} s{% else %}<span class="badge warn">scheduler not running in this process</span> - started by <code>python -m stock_dataload dashboard</code>, or run <code>eod-bulk-schedule run-due</code> regularly{% endif %}
+      &middot; server time {{ now.strftime('%Y-%m-%d %H:%M') }}</span>
+  </div>
+  <p class="muted" style="margin:6px 0 10px">A schedule loads one day of every stock of an exchange at its time (server time) on each day the exchange trades
+    (weekends and holidays are skipped), once per day - if the dashboard was not running at that time, the run follows as soon as it runs again that day.
+    It is an ordinary bulk load: the daily limits apply (3 calls per exchange and trading day, 3 whole-market loads a day, 5 loads per stock), and its
+    progress shows under <i>Current load</i>. A refused or failed run is not repeated that day.</p>
+  {% if schedules %}
+  <table id="schedule-table">
+    <tr><th>Exchange</th><th>Time</th><th>Loads</th><th>Options</th><th>Next run</th><th>Last run</th><th>Status</th><th></th></tr>
+    {% for row in schedules %}{% set sc = row.s %}
+    <tr class="{{ '' if sc.enabled else 'resolved' }}">
+      <td><b>{{ sc.market }}</b></td>
+      <td class="mono">{{ sc.run_time }}</td>
+      <td>{{ sc.trade_day_label }}{% if sc.symbol_list %}<div class="muted">only {{ sc.symbol_list|join(', ') }}</div>{% endif %}</td>
+      <td class="muted">{{ sc.fmt }}{% if sc.promote %} &middot; promote{% if sc.aggregates %} + weekly / monthly{% endif %}{% endif %}{% if sc.strict %} &middot; strict{% endif %}{% if sc.fake %} &middot; <span class="badge warn">stub</span>{% endif %}</td>
+      <td>{% if row.next %}{{ row.next.strftime('%Y-%m-%d %H:%M') }}{% if row.next <= now %} <span class="badge warn">due</span>{% endif %}{% else %}<span class="muted">disabled</span>{% endif %}</td>
+      <td class="muted">{{ sc.last_run_at or '-' }}{% if sc.last_trade_date %}<div>for {{ sc.last_trade_date }}</div>{% endif %}</td>
+      <td>{% if sc.last_status %}<span class="badge {{ 'ok' if sc.last_status == 'loaded' else 'warn' if sc.last_status in ('running', 'loaded with warnings') else 'err' }}" title="{{ sc.last_message or '' }}">{{ sc.last_status }}</span>
+          {% if sc.last_run_id %}<a class="mono" href="{{ url_for('api_load_run', run_id=sc.last_run_id) }}">{{ sc.last_run_id }}</a>{% endif %}
+          {% if sc.last_message and sc.last_status in ('refused', 'failed') %}<div class="err wrap" style="font-size:12px">{{ sc.last_message }}</div>{% endif %}
+        {% else %}<span class="muted">never ran</span>{% endif %}</td>
+      <td>{% if can('operator') %}<div style="display:flex;flex-wrap:wrap;gap:4px;min-width:150px">
+        <a class="btn small secondary" href="{{ url_for('api_load', schedule=sc.schedule_id) }}#schedules">Edit</a>
+        <form method="post" action="{{ url_for('api_load_schedule_toggle', schedule_id=sc.schedule_id) }}" class="inline"><button class="small secondary">{{ 'Disable' if sc.enabled else 'Enable' }}</button></form>
+        <form method="post" action="{{ url_for('api_load_schedule_run', schedule_id=sc.schedule_id) }}" class="inline"><button class="small secondary" {% if job and job.active %}disabled title="an API load is running"{% endif %}>Run now</button></form>
+        <form method="post" action="{{ url_for('api_load_schedule_delete', schedule_id=sc.schedule_id) }}" class="inline" onsubmit="return confirm('Delete the daily schedule of {{ sc.market }}?')"><button class="small danger">Delete</button></form>
+      </div>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted" id="no-schedules">No daily schedule yet.</p>{% endif %}
+
+  {% if can('operator') %}
+  {% set sf = schedule_form %}
+  <form method="post" action="{{ url_for('api_load_schedule_save') }}" id="schedule-form" style="margin-top:14px">
+    <h3 style="margin:0 0 8px">{{ 'Change the schedule of ' ~ sf.market if sf.get('editing') else 'Add a schedule' }} <span class="muted" style="font-weight:400;font-size:12px">(one per exchange - saving an exchange again changes its schedule)</span></h3>
+    <div class="form-grid">
+      <label for="sc_market">Exchange</label>
+      <span><input type="text" name="market" id="sc_market" value="{{ sf.get('market', 'US') }}" style="width:120px" required> <span class="muted">US = every US exchange</span></span>
+      <label for="sc_time">Run at</label>
+      <span><input type="time" name="run_time" id="sc_time" value="{{ sf.get('run_time', '18:30') }}" required style="width:130px">
+        <span class="muted">server time ({{ now.strftime('%H:%M') }} now), every day the exchange trades</span></span>
+      <label for="sc_trade_day">Load the data of</label>
+      <select name="trade_day" id="sc_trade_day">{% for k, label in trade_days.items() %}<option value="{{ k }}" {% if sf.get('trade_day', 'same') == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+      <div class="help">the API publishes a day's prices some hours after the close - run <i>the same trading day</i> late enough, or load <i>the previous trading day</i> in the morning</div>
+      <label for="sc_fmt">Format</label>
+      <select name="fmt" id="sc_fmt">{% for f in ('json', 'csv') %}<option value="{{ f }}" {% if sf.get('fmt', 'json') == f %}selected{% endif %}>{{ f }}</option>{% endfor %}</select>
+      <label for="sc_symbols">Only these stocks</label>
+      <input type="text" name="symbols" id="sc_symbols" value="{{ sf.get('symbols', '') }}" placeholder="optional, e.g. MSFT, HD - empty = every stock of the exchange">
+      <label>Afterwards</label>
+      <span><input type="checkbox" name="promote" {% if sf.get('promote') == 'on' %}checked{% endif %}> promote into {{ settings.daily_table }}
+        &nbsp; <input type="checkbox" name="aggregates" {% if sf.get('aggregates') == 'on' %}checked{% endif %}> then weekly / monthly
+        &nbsp; <input type="checkbox" name="strict" {% if sf.get('strict') == 'on' %}checked{% endif %}> load nothing if a record is invalid</span>
+      <label>Testing</label>
+      <span><input type="checkbox" name="fake" {% if sf.get('fake') == 'on' %}checked{% endif %}> use the built-in stub (invented prices, no API calls)
+        &nbsp; <input type="checkbox" name="allow_fake_data" {% if sf.get('allow_fake_data') == 'on' %}checked{% endif %}> also into a staging table with real data</span>
+      <label>Active</label>
+      <span><input type="checkbox" name="enabled" {% if sf.get('enabled') == 'on' %}checked{% endif %}> enabled</span>
+    </div>
+    <div class="actions"><button type="submit" id="schedule-save">Save schedule</button>
+      {% if sf.get('editing') %}<a class="btn secondary" href="{{ url_for('api_load') }}#schedules">Cancel</a>{% endif %}</div>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Runs <span class="muted" style="font-weight:400;font-size:12px">(Eod_Market_Run - also the command line's eod-fetch-market)</span></h2>
+  {% if runs %}
+  <table id="runs-table">
+    <tr><th>Run</th><th>Market</th><th>Kind</th><th>Gateway</th><th>Started</th><th>Status</th><th class="num">Stocks</th><th class="num">Loaded</th>
+        <th class="num">No data</th><th class="num">Failed</th><th class="num">Rows</th><th class="num">API calls</th><th></th></tr>
+    {% for r in runs %}
+    <tr>
+      <td><a class="mono" href="{{ url_for('api_load_run', run_id=r.RunId) }}">{{ r.RunId }}</a></td>
+      <td>{{ r.Market }}</td>
+      <td>{{ {'market': 'whole market', 'symbols': 'selected stocks', 'file': 'text file', 'bulk': 'one day (bulk)'}.get(r.Source, r.Source) }}</td>
+      <td>{% if r.Gateway == 'fake' %}<span class="badge warn">fake</span>{% elif r.Gateway == 'file' %}saved file{% else %}live{% endif %}</td>
+      <td class="muted">{{ r.StartedAt }}</td>
+      <td><span class="badge {{ 'ok' if r.Status == 'completed' else 'err' if r.Status in ('aborted', 'completed_with_errors') else 'warn' }}" title="{{ r.Message or '' }}">{{ r.Status }}</span></td>
+      <td class="num">{{ '{:,}'.format(r.Symbols) }}</td><td class="num">{{ '{:,}'.format(r.Loaded) }}</td>
+      <td class="num">{{ '{:,}'.format(r.NoData) }}</td><td class="num">{% if r.Failed %}<a class="err" href="{{ url_for('api_load_run', run_id=r.RunId, status='failed') }}">{{ '{:,}'.format(r.Failed) }}</a>{% else %}0{% endif %}</td>
+      <td class="num">{{ '{:,}'.format(r.Rows) }}</td><td class="num">{{ '{:,}'.format(r.ApiCalls) }}</td>
+      <td>{% if r.Status != 'completed' and r.Source != 'bulk' and can('operator') %}
+        <form method="post" action="{{ url_for('api_load_resume', run_id=r.RunId) }}" class="inline resume-form">
+          <input type="hidden" name="promote" value="on"><button type="submit" class="small secondary" {% if job and job.active %}disabled{% endif %} title="fetch the stocks not loaded yet, then promote them">Resume</button></form>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No API load has run yet.</p>{% endif %}
+</div>
+<script src="{{ url_for('static', filename='api_load.js') }}"></script>
+{% endblock %}

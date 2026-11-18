@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Create account{% endblock %}
+{% block content %}
+<div class="card login-card" style="max-width:520px">
+  <h1>Create an account</h1>
+  <p class="muted" style="font-size:13px">New accounts get the <b>{{ settings.dashboard_registration_role }}</b> role{% if settings.dashboard_registration_role == 'viewer' %} (read-only){% endif %}; an administrator can give you more on the Users page. You will receive a code to confirm your e-mail address.</p>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  {% if oauth_providers %}
+  <div class="toolbar">{% for name, p in oauth_providers.items() %}<a class="btn secondary" href="{{ url_for('oauth_start', provider=name) }}">Continue with {{ p.label }}</a>{% endfor %}</div>
+  {% if oauth_fake %}<p class="muted" style="font-size:12px">(test mode - a built-in stub stands in for {{ oauth_providers.values()|map(attribute='label')|join(', ') }})</p>{% endif %}
+  <p class="muted" style="text-align:center;font-size:12px">- or -</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('register') }}">
+    <div class="form-grid" style="grid-template-columns:150px 1fr">
+      <label for="username">User name</label><input type="text" id="username" name="username" value="{{ form.get('username', '') }}" required autofocus autocomplete="username">
+      <div class="help">2-64 characters: letters, digits, '.', '_', '@' or '-'</div>
+      <label for="email">E-mail</label><input type="email" id="email" name="email" value="{{ form.get('email', '') }}" required autocomplete="email">
+      <label for="display_name">Name</label><input type="text" id="display_name" name="display_name" value="{{ form.get('display_name', '') }}" autocomplete="name">
+      <label for="password">Password</label><input type="password" id="password" name="password" required minlength="8" autocomplete="new-password">
+      <label for="confirm_password">Repeat password</label><input type="password" id="confirm_password" name="confirm_password" required minlength="8" autocomplete="new-password">
+      <div class="help">at least 8 characters</div>
+    </div>
+    <div class="actions"><button type="submit">Create account</button><a class="btn secondary" href="{{ url_for('login') }}">I have an account</a></div>
+  </form>
+</div>
+{% endblock %}

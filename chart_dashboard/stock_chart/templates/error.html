@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>{{ status }} - {{ settings.title }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='chart.css') }}"></head>
+<body>
+<header class="top"><a class="brand" href="{{ url_for('index') }}">{{ settings.title }}</a></header>
+<main><div class="status error">{{ status }} - {{ message }}</div><p><a href="{{ url_for('index') }}">Back to the chart</a></p></main>
+</body>
+</html>

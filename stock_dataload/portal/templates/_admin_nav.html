@@ -1,0 +1,7 @@
+<div class="tabs" style="margin:0 0 16px">
+  <a href="{{ url_for('admin_home') }}" class="{{ 'active' if request.endpoint == 'admin_home' }}">Overview</a>
+  <a href="{{ url_for('admin_customers') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('admin_customer') }}">Customers &amp; keys</a>
+  <a href="{{ url_for('admin_orders') }}" class="{{ 'active' if request.endpoint == 'admin_orders' }}">Orders</a>
+  <a href="{{ url_for('admin_usage') }}" class="{{ 'active' if request.endpoint == 'admin_usage' }}">API usage</a>
+  <span class="muted" style="margin-left:auto;font-size:12px;align-self:center">admin area · {{ current_customer.email }} · JSON: <code>/admin/api/customers</code></span>
+</div>

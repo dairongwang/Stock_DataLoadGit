@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}{{ node.title }} - Docs{% endblock %}
+{% block content %}
+{% macro nav(n, depth) %}
+  <ul class="{{ 'doc-tree' if depth == 0 else '' }}">
+  {% for child in n.children %}
+    <li class="{{ 'open' if (node.slug == child.slug or node.slug.startswith(child.slug ~ '/')) }}">
+      <a href="{{ url_for('docs', slug=child.slug) }}" class="{{ 'current' if child.slug == node.slug }}">{{ child.title }}</a>
+      {% if child.children and (node.slug == child.slug or node.slug.startswith(child.slug ~ '/')) %}{{ nav(child, depth + 1) }}{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+{% endmacro %}
+<div class="doc-layout">
+  <aside class="doc-side">
+    <form method="get" action="{{ url_for('docs') }}" class="doc-search">
+      <input type="text" name="q" value="{{ query }}" placeholder="search the docs">
+      <button class="small secondary" type="submit">Go</button>
+    </form>
+    <a href="{{ url_for('docs') }}" class="doc-home {{ 'current' if node.slug == '' }}">{{ tree.title }}</a>
+    {{ nav(tree, 0) }}
+  </aside>
+  <article class="doc-body">
+    {% if results is not none %}
+    <div class="card">
+      <h2 style="margin-top:0">Search: "{{ query }}"</h2>
+      {% if results %}
+      <ul class="doc-results">
+        {% for n, snippet in results %}
+        <li><a href="{{ url_for('docs', slug=n.slug) }}">{{ n.title }}</a>
+          <span class="muted">{% for a in n.ancestors() if a.slug %}{{ a.title }} › {% endfor %}</span>
+          <div class="muted" style="font-size:12px">{{ snippet }}</div></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="muted">Nothing found.</p>{% endif %}
+    </div>
+    {% endif %}
+    <div class="doc-crumbs muted">
+      {% for a in ancestors %}<a href="{{ url_for('docs', slug=a.slug) }}">{{ a.title }}</a> › {% endfor %}<b>{{ node.title }}</b>
+      <span style="float:right" class="mono">{{ node.path.relative_to(node.path.parent.parent.parent) if node.path else '' }}</span>
+    </div>
+    <div class="doc-content card">
+      {% if toc|length > 2 %}
+      <div class="doc-toc"><b>On this page</b>
+        <ul>{% for level, hid, text in toc %}<li class="lvl{{ level }}"><a href="#{{ hid }}">{{ text }}</a></li>{% endfor %}</ul>
+      </div>
+      {% endif %}
+      {{ body|safe }}
+      {% if node.is_section and node.children %}
+      <h2 id="in-this-section">In this section</h2>
+      <ul>{% for child in node.children %}<li><a href="{{ url_for('docs', slug=child.slug) }}">{{ child.title }}</a>{% if child.children %} <span class="muted">({{ child.children|length }} pages)</span>{% endif %}</li>{% endfor %}</ul>
+      {% endif %}
+    </div>
+  </article>
+</div>
+{% endblock %}

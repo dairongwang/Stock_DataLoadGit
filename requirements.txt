@@ -1,13 +1,17 @@
-# Core (convert csv/text/json/xml + load into SQLite): Python 3.10+ standard library only.
-# Install into the project's virtual environment:
-#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-# Needed for the web dashboard:
+# Runtime + tests. Install with the SAME interpreter you run the project with:
+#   python -m pip install -r requirements.txt
+# (inside the project's virtual environment: python -m venv .venv, then activate it first)
+#
+# Converting csv/text/json/xml and loading into SQLite need the standard library only.
+
+# the web dashboard and the portal
 flask>=2.3
-# Needed to read Excel (.xlsx) source files:
+# reading Excel (.xlsx) source files
 openpyxl>=3.1
-# Needed for the test-coverage report (python -m coverage ...):
+# the test-coverage report: python -m coverage run ... / python -m coverage report -m
 coverage>=7.0
-# Needed for the real-browser dashboard tests (tests/test_dashboard_browser.py);
-# the Chromium build itself comes from `python -m playwright install chromium`
-# or an existing cache via PLAYWRIGHT_BROWSERS_PATH:
-playwright>=1.56
+
+# Optional extras - not needed to run or test the project:
+#   qrcode>=7.4        QR code when enrolling an authenticator app (otherwise the key is typed in)
+#   playwright>=1.56   real-browser dashboard tests (tests/test_dashboard_browser.py; skipped when missing)
+#                      -> see requirements-dev.txt

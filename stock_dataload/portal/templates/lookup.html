@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Find my order{% endblock %}
+{% block content %}
+<div class="card" style="max-width:520px;margin:30px auto">
+  <h1>Find my order</h1>
+  <p class="muted">Bought as a guest? Enter the order reference (<span class="mono">ORD-…</span>, on the receipt) and the e-mail address used for the purchase to see the receipt, the token balance - and to generate a new key if you lost yours.</p>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('order_lookup') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <div class="form-grid" style="grid-template-columns:140px 1fr">
+      <label for="ref">Order reference</label><input type="text" id="ref" name="ref" value="{{ ref }}" required placeholder="ORD-XXXXXXXXXX" class="mono" autofocus>
+      <label for="email">E-mail address</label><input type="email" id="email" name="email" required autocomplete="email">
+    </div>
+    <div class="actions"><button type="submit">Open receipt</button></div>
+  </form>
+  <p class="muted" style="font-size:12px">Have an account? <a href="{{ url_for('login') }}">Sign in</a> - all your orders are on the account page.</p>
+</div>
+{% endblock %}

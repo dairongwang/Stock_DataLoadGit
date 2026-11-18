@@ -1,0 +1,6 @@
+# Optional, for development:
+-r requirements.txt
+# real-browser tests (tests/test_browser.py; skipped when missing) - then: python -m playwright install chromium
+playwright>=1.56
+# a production WSGI server (see README - Deployment)
+waitress>=3.0

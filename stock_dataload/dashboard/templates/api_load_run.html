@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}API load run {{ run.RunId }}{% endblock %}
+{% block content %}
+<h1>API load run <span class="mono">{{ run.RunId }}</span>
+  <span class="muted" style="font-size:13px;font-weight:400">Eod_Market_Run / Eod_Market_Run_Item</span></h1>
+<p><a href="{{ url_for('api_load') }}">&larr; API loading</a></p>
+
+<div class="card">
+  <div class="toolbar" style="justify-content:space-between">
+    <h2 style="margin:0">{{ run.Market }}
+      <span class="badge {{ 'ok' if run.Status == 'completed' else 'err' if run.Status in ('aborted', 'completed_with_errors') else 'warn' }}" id="run-status">{{ run.Status }}</span>
+      {% if run.Gateway == 'fake' %}<span class="badge warn" title="invented prices of the built-in stub">fake</span>{% endif %}</h2>
+    {% set bulk = parameters.get('source') == 'bulk' %}
+    {% if run.Status != 'completed' and run.Status != 'running' and can('operator') and not bulk %}
+    <form method="post" action="{{ url_for('api_load_resume', run_id=run.RunId) }}" class="inline resume-form">
+      <label class="muted"><input type="checkbox" name="promote" checked> promote</label>
+      <label class="muted"><input type="checkbox" name="aggregates"> weekly / monthly</label>
+      <button type="submit" class="small" id="resume-button" {% if busy %}disabled title="an API load is running - one at a time"{% endif %}>Resume</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="kv" style="margin-top:10px">
+    <span class="muted">started</span><span>{{ run.StartedAt }}</span>
+    <span class="muted">finished</span><span>{{ run.FinishedAt or '-' }}</span>
+    <span class="muted">gateway</span><span>{{ run.Gateway }}</span>
+    {% if run.Message %}<span class="muted">message</span><span class="wrap">{{ run.Message }}</span>{% endif %}
+    <span class="muted">stocks</span><span>{{ '{:,}'.format(run.Symbols) }}: {{ '{:,}'.format(run.Loaded) }} loaded, {{ '{:,}'.format(run.NoData) }} without data,
+      <span class="{{ 'err' if run.Failed }}">{{ '{:,}'.format(run.Failed) }} failed</span>, {{ '{:,}'.format(run.Skipped) }} skipped</span>
+    <span class="muted">rows</span><span>{{ '{:,}'.format(run.Rows) }} records into the staging table, {{ '{:,}'.format(run.ApiCalls) }} API calls</span>
+  </div>
+  {% if parameters %}
+  <details class="details" style="margin-top:10px">
+    <summary>Parameters</summary>
+    <div class="kv" style="margin-top:6px">
+      {% for k, v in parameters.items() %}<span class="muted">{{ k }}</span><span class="mono wrap">{{ v|join(', ') if v is iterable and v is not string and v is not mapping else v }}</span>{% endfor %}
+    </div>
+  </details>
+  {% endif %}
+</div>
+
+{% if parameters.get('source') == 'bulk' %}
+<div class="card" id="bulk-note">
+  <h2 style="margin-top:0">One day of every stock (bulk)</h2>
+  <p class="muted" style="margin:0">A one-day bulk load (<code>eod-bulk-last-day</code>): {{ 'the saved answer ' ~ parameters.get('file') if parameters.get('file') else 'one API call' }}
+    for <b>{{ run.Market }}</b> {{ parameters.get('date') or '(the last trading day)' }}, loaded in one transaction - there are no
+    per-stock rows. Stocks skipped because of their daily limit and rejected records are counted above; the rejected records are on
+    <a href="{{ url_for('monitor_data_errors') }}">Monitoring &rarr; Data errors</a>. A bulk load is not resumed - start it again.</p>
+</div>
+{% else %}
+<div class="card">
+  <div class="toolbar">
+    <h2 style="margin:0">Stocks</h2>
+    <span class="monitor-nav" style="margin:0 0 0 12px">
+      <a href="{{ url_for('api_load_run', run_id=run.RunId) }}" class="{{ 'active' if not wanted }}">all ({{ '{:,}'.format(counts.values()|sum) }})</a>
+      {% for s in statuses %}{% if counts.get(s) %}
+      <a href="{{ url_for('api_load_run', run_id=run.RunId, status=s) }}" class="{{ 'active' if wanted == s }}">{{ s }} ({{ '{:,}'.format(counts[s]) }})</a>
+      {% endif %}{% endfor %}
+    </span>
+  </div>
+  {% if items %}
+  {% if total > items|length %}<p class="muted">showing the first {{ '{:,}'.format(items|length) }} of {{ '{:,}'.format(total) }} stocks (<code>?limit=</code> shows more)</p>{% endif %}
+  <table id="run-items">
+    <tr><th class="num">#</th><th>Symbol</th><th>Status</th><th class="num">Attempts</th><th class="num">HTTP</th>
+        <th class="num">Received</th><th class="num">Inserted</th><th class="num">Updated</th><th class="num">Rejected</th>
+        <th>First date</th><th>Last date</th><th class="wrap">Error</th></tr>
+    {% for i in items %}
+    <tr>
+      <td class="num muted">{{ i.Position }}</td>
+      <td class="mono">{{ i.Symbol }}</td>
+      <td><span class="badge {{ 'ok' if i.Status == 'loaded' else 'err' if i.Status == 'failed' else 'warn' if i.Status == 'pending' else '' }}">{{ i.Status }}</span></td>
+      <td class="num">{{ i.Attempts }}</td>
+      <td class="num">{{ i.HttpStatus or '' }}</td>
+      <td class="num">{{ '{:,}'.format(i.Received) }}</td>
+      <td class="num">{{ '{:,}'.format(i.Inserted) }}</td>
+      <td class="num">{{ '{:,}'.format(i.Updated) }}</td>
+      <td class="num{{ ' err' if i.Rejected }}">{{ i.Rejected }}</td>
+      <td class="muted">{{ i.FirstDate or '' }}</td>
+      <td class="muted">{{ i.LastDate or '' }}</td>
+      <td class="wrap err">{{ i.Error or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No stocks{% if wanted %} with the status {{ wanted }}{% endif %}.</p>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

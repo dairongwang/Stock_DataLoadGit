@@ -6,18 +6,21 @@
 Roles: {% for r in roles %}<b>{{ r }}</b>{% if not loop.last %} &lt; {% endif %}{% endfor %}.</p>
 <div class="card">
 <table>
-  <tr><th>User name</th><th>Name</th><th>Role</th><th>Status</th><th>Created</th><th>Last sign-in</th><th></th></tr>
+  <tr><th>User name</th><th>Name</th><th>E-mail</th><th>Role</th><th>2FA</th><th>Status</th><th>Created</th><th>Last sign-in</th><th></th></tr>
   {% for u in users %}
   <tr class="{{ '' if u.active else 'resolved' }}">
     <td class="mono"><b>{{ u.username }}</b>{% if current_user and u.user_id == current_user.user_id %} <span class="badge">you</span>{% endif %}</td>
     <td>{{ u.display_name or '' }}</td>
+    <td class="muted">{{ u.email or '-' }}{% if u.email and not u.is_email_verified %} <span class="badge warn" title="has not confirmed the e-mail address yet">unverified</span>{% endif %}{% if not u.has_password %} <span class="badge" title="signs in with a connected account only">no password</span>{% endif %}</td>
     <td><span class="badge {{ 'type' if u.role == 'admin' }}">{{ u.role }}</span></td>
+    <td>{% for m in two_factor.get(u.user_id, []) %}<span class="badge ok" title="{{ method_labels[m] }}">{{ m }}</span> {% else %}<span class="muted">none</span>{% endfor %}</td>
     <td>{% if u.active %}<span class="badge ok">active</span>{% else %}<span class="badge err">disabled</span>{% endif %}
         {% if u.must_change_password %}<span class="badge warn" title="must change the password at the next sign-in">password change pending</span>{% endif %}</td>
     <td class="muted">{{ u.created_at }}{% if u.created_by %} <span class="muted">by {{ u.created_by }}</span>{% endif %}</td>
     <td class="muted">{{ u.last_login_at or '-' }}</td>
     <td style="white-space:nowrap">
       <a class="btn small secondary" href="{{ url_for('user_edit', user_id=u.user_id) }}">Edit</a>
+      {% if two_factor.get(u.user_id) %}<form method="post" action="{{ url_for('user_reset_2fa', user_id=u.user_id) }}" class="inline" onsubmit="return confirm('Remove all second factors of {{ u.username }}?')"><button class="small secondary">Reset 2FA</button></form>{% endif %}
       {% if current_user and u.user_id != current_user.user_id %}
       <form method="post" action="{{ url_for('user_delete', user_id=u.user_id) }}" class="inline" onsubmit="return confirm('Delete user {{ u.username }}?')"><button class="small danger">Delete</button></form>
       {% endif %}

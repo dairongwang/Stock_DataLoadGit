@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Second factor{% endblock %}
+{% block content %}
+<div class="card" style="max-width:520px;margin:30px auto">
+  <h1>One more step</h1>
+  <p class="muted">Signing in as <b>{{ customer.email }}</b>. Confirm it is you with one of your second factors.</p>
+  <div class="tabs">
+    {% for m in methods %}<a href="{{ url_for('login_verify', method=m.method) }}" class="{{ 'active' if chosen == m.method }}">{{ m.label }}</a>{% endfor %}
+    {% if recovery_left %}<a href="{{ url_for('login_verify', method='recovery') }}" class="{{ 'active' if chosen == 'recovery' }}">Recovery code</a>{% endif %}
+  </div>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  {% if chosen in ('email', 'sms') %}
+    {% set m = methods|selectattr('method', 'equalto', chosen)|first %}
+    {% if pending and pending[0] == chosen %}
+      <p>A code was sent to <b>{{ pending[1] }}</b>.{% if (chosen == 'email' and mail_stub) or (chosen == 'sms' and sms_stub) %} <span class="warn">(stub mode - it was printed to the server console)</span>{% endif %}</p>
+    {% else %}
+      <form method="post" action="{{ url_for('login_verify') }}" style="margin-bottom:14px">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="method" value="{{ chosen }}">
+        <button type="submit" name="action" value="send">Send a code to {{ m.masked_destination }}</button>
+      </form>
+    {% endif %}
+  {% elif chosen == 'totp' %}
+    <p>Open your authenticator app and enter the 6-digit code for <b>{{ settings.issuer }}</b>.</p>
+  {% else %}
+    <p>Enter one of your recovery codes (each works once; {{ recovery_left }} left).</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('login_verify') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="method" value="{{ chosen }}">
+    <div class="form-grid" style="grid-template-columns:120px 1fr">
+      <label for="code">Code</label><input type="text" id="code" name="code" autocomplete="one-time-code" {% if chosen != 'recovery' %}inputmode="numeric"{% endif %} required autofocus class="mono" style="font-size:20px;letter-spacing:.15em;max-width:240px">
+    </div>
+    <div class="actions"><button type="submit">Sign in</button>
+      {% if chosen in ('email', 'sms') and pending %}<button type="submit" name="action" value="send" class="secondary" formnovalidate>Send a new code</button>{% endif %}
+      <a class="btn secondary" href="{{ url_for('login') }}">Cancel</a></div>
+  </form>
+</div>
+{% endblock %}

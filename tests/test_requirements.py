@@ -27,6 +27,19 @@ requirements called out for this project, each in its own TestCase:
   R5. Business users can configure custom file formats, the conversion
       folder and the loading folder through the dashboard.
       (detailed tests: tests/test_dashboard.py)
+
+  R6. The bulk load of ALL stocks of a market runs at most 3 times a day
+      per market - enforced in the back end (the 4th run is refused before
+      any API call, with a notice) and in the front end (the dashboard shows
+      today's count, blocks the start button and shows the notice).
+      (detailed tests: tests/test_market_load_limit.py, browser flow in
+      tests/test_dashboard_browser.py)
+
+  R7. A stock is loaded at most 5 times a day (more stocks: skipped with a
+      warning; only such stocks: refused), a text file lists at most 100
+      stock symbols, and loading from a text file runs at most 5 times a day -
+      each refused with an error before any API call.
+      (detailed tests: tests/test_load_limits.py)
 """
 
 from __future__ import annotations
@@ -376,6 +389,73 @@ class R5_DashboardConfigurationTests(TempProjectTestCase):
         out = self.root / "to_load" / "vendor_20250123.txt"
         self.assertTrue(out.exists())
         self.assertEqual(out.read_text(encoding="utf-8"), ORIGINAL.read_text(encoding="utf-8"))
+
+
+# =====================================================================
+# R6 - a whole market at most 3 times a day (back end + front end)
+# =====================================================================
+class R6_MarketBulkLoadLimitTests(TempProjectTestCase):
+    def test_fourth_whole_market_load_of_the_day_is_refused_with_a_notice(self):
+        import json
+        from stock_dataload.auth import UserStore
+        from stock_dataload.config import save_settings
+        from stock_dataload.dashboard import create_app
+        from stock_dataload.eod_market import MAX_MARKET_LOADS_PER_DAY, MarketFetcher, MarketLoadLimitError
+        from stock_dataload.eod_symbols import SymbolListLoader
+        self.assertEqual(MAX_MARKET_LOADS_PER_DAY, 3)
+        self.settings.config_file = self.root / "config.ini"
+        save_settings(self.settings, self.settings.config_file)
+        SymbolListLoader(self.settings).load_text("NYSE", json.dumps(
+            [{"Code": c, "Name": c, "Country": "USA", "Exchange": "NYSE", "Currency": "USD", "Type": "Common Stock",
+              "Isin": None} for c in ("HD", "JNJ", "MRK", "PFE")]), "json", source_file="r6-list.json")
+        fetcher = MarketFetcher(self.settings, fake=True, sleep=lambda s: None)
+        for _ in range(3):                                                   # back end: three are fine ...
+            fetcher.fetch_market("NYSE", limit=1)
+        with self.assertRaisesRegex(MarketLoadLimitError, "at most 3 times a day"):   # ... the 4th is refused
+            fetcher.fetch_market("NYSE")
+        fetcher.fetch_market("NYSE", symbols=["HD"])                         # selected stocks still load
+
+        UserStore(self.settings).create_user("dummy_r6_operator", "Dummy-R6-Pass-1", role="operator")
+        app = create_app(load_settings(self.settings.config_file), bootstrap=False)
+        app.config["TESTING"] = True
+        client = app.test_client()
+        client.post("/login", data={"username": "dummy_r6_operator", "password": "Dummy-R6-Pass-1"})
+        page = client.get("/api-load").get_data(as_text=True)                # front end: the count + the rule
+        self.assertIn('<span class="badge err">NYSE 3/3</span>', page)
+        self.assertIn('"exhausted": true', page)                            # what the page script blocks on
+        r = client.post("/api-load/start", data={"mode": "market", "market": "NYSE", "fake": "on"})
+        page = client.get(r.headers["Location"]).get_data(as_text=True)     # the notice
+        self.assertIn("Not started - NYSE: the bulk load of all stocks of a market may run at most 3 times a day", page)
+        self.assertEqual(len(fetcher.runs("NYSE")), 4)                       # 3 whole-market + 1 selected
+
+
+# =====================================================================
+# R7 - a stock 5 loads a day; a text file 100 symbols and 5 loads a day
+# =====================================================================
+class R7_StockAndTextFileLimitTests(TempProjectTestCase):
+    def test_the_limits(self):
+        import json
+        from stock_dataload.eod_market import ITEM_SKIPPED, MarketFetcher
+        from stock_dataload.eod_symbols import SymbolListLoader
+        from stock_dataload.load_limits import FileLoadLimitError, StockLoadLimitError, TooManySymbolsError
+        SymbolListLoader(self.settings).load_text("NYSE", json.dumps(
+            [{"Code": c, "Name": c, "Country": "USA", "Exchange": "NYSE", "Currency": "USD", "Type": "Common Stock",
+              "Isin": None} for c in ("HD", "JNJ", "MRK", "PFE")]), "json", source_file="r7-list.json")
+
+        def fetcher():
+            return MarketFetcher(self.settings, fake=True, sleep=lambda s: None)
+        for _ in range(5):                                                    # HD: five loads today ...
+            fetcher().fetch_market("NYSE", symbols=["HD"])
+        run = fetcher().fetch_market("NYSE", symbols=["HD", "PFE"])            # ... the 6th is skipped (warning)
+        self.assertEqual((run.outcomes["HD"].status, run.outcomes["HD"].limited), (ITEM_SKIPPED, True))
+        with self.assertRaisesRegex(StockLoadLimitError, "at most 5 times a day"):   # only HD: refused
+            fetcher().fetch_market("NYSE", symbols=["HD"])
+        with self.assertRaisesRegex(TooManySymbolsError, "at most 100"):            # 101 symbols in a file
+            fetcher().fetch_market("NYSE", symbols=[f"S{i:03d}" for i in range(101)], source="file")
+        for _ in range(5):                                                    # five text-file loads ...
+            fetcher().fetch_market("NYSE", symbols=["JNJ"], source="file")
+        with self.assertRaisesRegex(FileLoadLimitError, "at most 5 times a day"):   # ... the 6th is refused
+            fetcher().fetch_market("NYSE", symbols=["MRK"], source="file")
 
 
 if __name__ == "__main__":

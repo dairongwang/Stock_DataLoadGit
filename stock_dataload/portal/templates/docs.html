@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}API documentation{% endblock %}
+{% block content %}
+{% set api = base_url() ~ '/api/v1' %}
+<h1>API documentation</h1>
+<p class="lead">Base URL <code>{{ api }}</code> &middot; JSON unless <code>format=csv</code> &middot; every metered request needs an API key.</p>
+<div class="tabs">
+  <a href="#auth">Authentication</a><a href="#data">Data endpoints</a><a href="#fields">Fields</a>
+  <a href="#tokens">Tokens</a><a href="#free">Free endpoints</a><a href="#errors">Errors</a><a href="#examples">Examples</a>
+</div>
+
+<div class="card" id="auth">
+  <h2 style="margin-top:0">Authentication</h2>
+  <p>Send your key (<code>sdl_…</code>) with every request - one of:</p>
+  <table>
+    <tr><th>Header</th><td><code>Authorization: Bearer &lt;key&gt;</code> (preferred)</td></tr>
+    <tr><th>Header</th><td><code>X-API-Key: &lt;key&gt;</code></td></tr>
+    <tr><th>Query</th><td><code>?api_key=&lt;key&gt;</code> (ends up in logs - avoid)</td></tr>
+  </table>
+  <p class="muted" style="margin-bottom:0">No key yet? <a href="{{ url_for('buy') }}">Buy a token pack</a> - the receipt shows the key once. Lost it? Rotate it on your account page or the receipt; the balance stays.</p>
+</div>
+
+<div class="card" id="data">
+  <h2 style="margin-top:0">Data endpoints (metered)</h2>
+  <table>
+    <tr><th>Endpoint</th><th>Rows</th></tr>
+    <tr><td class="mono">GET /api/v1/daily</td><td>one per trading day of the calendar year</td></tr>
+    <tr><td class="mono">GET /api/v1/weekly</td><td>one per ISO week of the ISO year</td></tr>
+    <tr><td class="mono">GET /api/v1/monthly</td><td>one per calendar month</td></tr>
+  </table>
+  <h3>Parameters</h3>
+  <table>
+    <tr><th>Name</th><th>Required</th><th>Meaning</th></tr>
+    <tr><td class="mono">ticker</td><td>yes</td><td>1-{{ settings.max_tickers_per_request }} symbols, comma separated or repeated (<code>ticker=MRK&amp;ticker=PFE</code>)</td></tr>
+    <tr><td class="mono">year</td><td>yes</td><td>1900-2100{% if catalog and catalog.kinds.daily.years %} - data for {{ catalog.kinds.daily.years|join(', ') }}{% endif %}</td></tr>
+    <tr><td class="mono">market</td><td>no</td><td>only rows of this market{% if catalog and catalog.markets %} ({{ catalog.markets|join(', ') }}){% endif %}</td></tr>
+    <tr><td class="mono">format</td><td>no</td><td><code>json</code> (default) or <code>csv</code> (a file download)</td></tr>
+  </table>
+  <h3>Answer</h3>
+<pre><code>{"kind": "daily", "year": {{ sample_year }}, "market": null, "tickers": ["MRK", "XYZ"],
+ "tickers_with_data": ["MRK"], "tickers_without_data": ["XYZ"], "count": 250,
+ "tokens_charged": {{ settings.tokens_per_query }}, "tokens_remaining": 99, "records": [ ... ]}</code></pre>
+  <p class="muted" style="margin-bottom:0">Headers <code>X-Tokens-Charged</code> and <code>X-Tokens-Remaining</code> come with every metered answer (JSON and CSV).</p>
+</div>
+
+<div class="card" id="fields">
+  <h2 style="margin-top:0">Fields</h2>
+  <table>
+    <tr><th>Data set</th><th>Fields of a record</th></tr>
+    {% for kind in kinds %}
+    <tr><td><b>{{ kind }}</b></td><td class="mono wrap">{% for _, name in public_columns[kind] %}{{ name }}{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="muted" style="margin-bottom:0">Prices are numbers, <code>volume</code> an integer, dates <code>YYYY-MM-DD</code>; <code>complete</code> is false when a trading day of the week / month is missing in the source.</p>
+</div>
+
+<div class="card" id="tokens">
+  <h2 style="margin-top:0">What costs tokens</h2>
+  <ul>
+    <li><b>{{ settings.tokens_per_query }} token{{ 's' if settings.tokens_per_query != 1 }} per ticker that returns data</b> for the year - tickers without data are free;</li>
+    <li>all or nothing: without enough tokens for the whole request the answer is <code>402</code> and nothing is charged;</li>
+    <li>tokens never expire; top up a key on the <a href="{{ url_for('buy') }}">purchase page</a> - the key stays the same.</li>
+  </ul>
+</div>
+
+<div class="card" id="free">
+  <h2 style="margin-top:0">Free endpoints</h2>
+  <table>
+    <tr><th>Endpoint</th><th>Key</th><th>Result</th></tr>
+    <tr><td class="mono">GET /api/v1/catalog</td><td>no</td><td>data sets (rows, tickers, first / last, years), markets, packs and prices</td></tr>
+    <tr><td class="mono">GET /api/v1/tickers?kind=daily&amp;year={{ sample_year }}&amp;q=M</td><td>no</td><td>the tickers with data and their row counts (<code>market</code>, <code>limit</code> optional)</td></tr>
+    <tr><td class="mono">GET /api/v1/balance</td><td>yes</td><td>tokens remaining / purchased / used, requests, rows delivered</td></tr>
+    <tr><td class="mono">GET /api/v1/usage?limit=50</td><td>yes</td><td>the key's recent requests</td></tr>
+  </table>
+</div>
+
+<div class="card" id="errors">
+  <h2 style="margin-top:0">Errors</h2>
+  <p>Errors are JSON: <code>{"error": "...", "status": 4xx, ...}</code></p>
+  <table>
+    <tr><th>Status</th><th>Meaning</th></tr>
+    <tr><td>400</td><td>a parameter is wrong - the message says which</td></tr>
+    <tr><td>401</td><td>no key, an unknown or revoked key, or a disabled account</td></tr>
+    <tr><td>402</td><td>not enough tokens - nothing was charged (<code>tokens_required</code>, <code>tokens_remaining</code>, <code>buy_tokens</code>)</td></tr>
+    <tr><td>404</td><td>unknown data set</td></tr>
+    <tr><td>405</td><td>method not allowed (the API is GET only)</td></tr>
+    <tr><td>503</td><td>the data is temporarily unavailable</td></tr>
+  </table>
+</div>
+
+<div class="card" id="examples">
+  <h2 style="margin-top:0">Examples</h2>
+  <h3>curl</h3>
+<pre><code>curl "{{ api }}/catalog"
+curl -H "Authorization: Bearer $STOCK_API_KEY" "{{ api }}/daily?ticker=MRK,PFE&amp;year={{ sample_year }}"
+curl -H "Authorization: Bearer $STOCK_API_KEY" -o monthly.csv "{{ api }}/monthly?ticker=JNJ&amp;year={{ sample_year }}&amp;format=csv"
+curl -H "Authorization: Bearer $STOCK_API_KEY" "{{ api }}/balance"</code></pre>
+  <h3>Python</h3>
+<pre><code>import json, os, urllib.request
+
+req = urllib.request.Request("{{ api }}/weekly?ticker=HD&amp;year={{ sample_year }}",
+                             headers={"Authorization": "Bearer " + os.environ["STOCK_API_KEY"]})
+with urllib.request.urlopen(req) as resp:
+    answer = json.load(resp)
+for row in answer["records"]:
+    print(row["week_start"], row["close"])
+print("tokens left:", answer["tokens_remaining"])</code></pre>
+  <p class="muted" style="margin-bottom:0">Keep the key out of your source code - read it from an environment variable as above.</p>
+</div>
+{% endblock %}

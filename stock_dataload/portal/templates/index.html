@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Stock data for your code{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>End-of-day stock data through a simple API</h1>
+  <p class="lead">Daily, weekly and monthly prices (open, high, low, close, volume) per ticker and year - as JSON or CSV.
+  Pay with tokens: one token per ticker and year that returns data. No subscription, tokens never expire.</p>
+  <div class="cta">
+    <a class="btn big" href="{{ url_for('buy') }}">Buy tokens</a>
+    <a class="btn big secondary" href="{{ url_for('docs') }}">Read the API docs</a>
+    {% if not current_customer %}<span class="muted">or <a href="{{ url_for('signup') }}">create an account</a> to manage several keys</span>{% endif %}
+  </div>
+</section>
+
+{% if catalog %}
+{% set daily = catalog.kinds.daily %}
+<div class="card">
+  <h2 style="margin-top:0">What is available</h2>
+  <div class="stats">
+    <div class="stat">{{ '{:,}'.format(daily.tickers) }}<small>tickers with daily data</small></div>
+    <div class="stat">{{ '{:,}'.format(daily.rows) }}<small>daily rows</small></div>
+    <div class="stat">{% if daily.years %}{{ daily.years|min }}{% if daily.years|length > 1 %}-{{ daily.years|max }}{% endif %}{% else %}-{% endif %}<small>years</small></div>
+    <div class="stat">{{ catalog.markets|length }}<small>{{ 'market' if catalog.markets|length == 1 else 'markets' }}{% if catalog.markets %}: {{ catalog.markets|join(', ') }}{% endif %}</small></div>
+  </div>
+  <table style="margin-top:14px">
+    <tr><th>Data set</th><th class="num">Tickers</th><th class="num">Rows</th><th>From</th><th>To</th><th>Years</th></tr>
+    {% for kind in kinds %}{% set k = catalog.kinds[kind] %}
+    <tr><td><b>{{ kind }}</b></td><td class="num">{{ '{:,}'.format(k.tickers) }}</td><td class="num">{{ '{:,}'.format(k.rows) }}</td>
+        <td class="muted">{{ k.first or '-' }}</td><td class="muted">{{ k.last or '-' }}</td><td class="muted">{{ k.years|join(', ') or '-' }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% else %}
+<div class="notice" style="margin-bottom:14px">The data catalogue is temporarily unavailable - please try again in a moment.</div>
+{% endif %}
+
+<h2>How it works</h2>
+<div class="steps">
+  <div class="card"><b>Buy a token pack</b><p class="muted" style="margin:6px 0 0">As a guest with just an e-mail address, or with an account. Pay by card (Stripe) or PayPal.</p></div>
+  <div class="card"><b>Get your API key</b><p class="muted" style="margin:6px 0 0">The receipt shows the key (<code>sdl_…</code>) once - copy it. Top it up any time; the key stays the same.</p></div>
+  <div class="card"><b>Call the API</b><p class="muted" style="margin:6px 0 0">Ask for up to {{ settings.max_tickers_per_request }} tickers per request. Tickers without data are free.</p></div>
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h3 style="margin-top:0">A request</h3>
+<pre><code>curl -H "Authorization: Bearer &lt;your key&gt;" \
+     "{{ base_url() }}/api/v1/daily?ticker=MRK,PFE&amp;year={{ sample_year }}"</code></pre>
+  <p class="muted" style="margin:8px 0 0">The answer lists the rows per trading day and what it cost - <a href="{{ url_for('docs') }}">all endpoints and fields</a>.</p>
+</div>
+
+<h2 id="pricing">Pricing</h2>
+<p class="muted">One token = one ticker for one year of daily, weekly or monthly data ({{ settings.tokens_per_query }} token{{ 's' if settings.tokens_per_query != 1 }} per ticker and year). Prices in {{ settings.currency }}.</p>
+<div class="packs">
+  {% for p in packs %}
+  <div class="pack">
+    <a href="{{ url_for('buy', pack=p.key) }}" style="color:inherit;text-decoration:none;display:block">
+      <div class="name">{{ p.name }}</div>
+      <div class="tokens">{{ '{:,}'.format(p.tokens) }} <small>tokens</small></div>
+      <div class="price">{{ p.price }}</div>
+      <div class="per">{{ p.per_token }} per token</div>
+    </a>
+  </div>
+  {% endfor %}
+</div>
+<div class="actions"><a class="btn" href="{{ url_for('buy') }}">Choose a pack</a>
+  <a class="btn secondary" href="{{ url_for('order_lookup') }}">Find an earlier order</a></div>
+{% endblock %}

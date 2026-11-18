@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Admin - API usage{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<h1>API usage</h1>
+{% include "_admin_nav.html" %}
+<div class="card">
+  {% if usage %}
+  <table>
+    <tr><th>When</th><th>Key</th><th>Data</th><th>Tickers</th><th>Year</th><th class="num">Tokens</th><th class="num">Rows</th><th>Status</th><th>From</th></tr>
+    {% for u in usage %}
+    <tr>
+      <td class="muted">{{ u.requested_at[:16] }}</td><td class="mono">{{ key_prefixes.get(u.api_key_id, u.api_key_id) }}</td>
+      <td>{{ u.endpoint }}</td><td class="mono">{{ (u.tickers or '')[:40] }}</td><td>{{ u.year or '' }}</td>
+      <td class="num">{{ u.tokens }}</td><td class="num">{{ '{:,}'.format(u.rows) }}</td>
+      <td>{% if u.status == 'ok' %}<span class="badge ok">ok</span>{% else %}<span class="badge err">{{ u.status }}</span>{% endif %}</td>
+      <td class="muted">{{ u.remote_addr or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No API requests yet.</p>{% endif %}
+</div>
+{% endblock %}

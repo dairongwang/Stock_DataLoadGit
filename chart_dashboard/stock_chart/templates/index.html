@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ (ticker ~ ' - ') if ticker }}{{ settings.title }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='chart.css') }}">
+</head>
+<body data-ticker="{{ ticker }}" data-ticker-from-url="{{ '1' if from_url else '' }}" data-range="{{ chosen_range }}" data-interval="{{ chosen_interval }}" data-api="{{ request.script_root }}" data-title="{{ settings.title }}" data-watchlist="{{ watchlist|join(',') }}" data-watchlist-max="{{ watchlist_max }}">
+<header class="top">
+  <a class="brand" href="{{ url_for('index') }}">{{ settings.title }} <small>daily · weekly · monthly candles · volume</small></a>
+  <form id="ticker-form" autocomplete="off">
+    <input id="ticker" name="ticker" list="ticker-list" value="{{ ticker }}" placeholder="ticker, e.g. MRK" aria-label="ticker" spellcheck="false">
+    <datalist id="ticker-list"></datalist>
+    <button type="submit">Show</button>
+  </form>
+  <span class="right"><span id="source">source: {{ settings.daily_table }}</span> (read-only) · v{{ version }}</span>
+</header>
+<main>
+<div class="layout">
+<aside class="watchlist" aria-label="stock lists">
+  <div class="wl-head">
+    <label class="wl-listpick" for="list-select">List
+      <select id="list-select" aria-label="the list to review"><option>loading …</option></select>
+    </label>
+  </div>
+  <div class="wl-listactions">
+    <button type="button" id="screen-load" class="wl-link" title="load a screen list: a text file with stock symbols separated by commas">&#8679; Load screen list&hellip;</button>
+    <input type="file" id="screen-file" accept=".txt,.csv,text/plain,text/csv" class="hidden" aria-label="screen list file">
+    <button type="button" id="wl-reset" class="wl-link hidden" title="replace the watchlist with the default list">Reset</button>
+    <button type="button" id="list-delete" class="wl-link danger hidden" title="delete this screen list">Delete list</button>
+  </div>
+  <h2 class="wl-title"><span id="list-name">Watchlist</span> <span id="wl-count" class="wl-count"></span></h2>
+  <label class="wl-jump" for="wl-select">Go to
+    <select id="wl-select" aria-label="go to a stock of the list"></select>
+  </label>
+  <form id="wl-goto-form" class="wl-goto" autocomplete="off">
+    <input id="wl-goto" list="wl-goto-list" placeholder="or type a symbol, e.g. PFE" aria-label="go to a symbol" spellcheck="false">
+    <datalist id="wl-goto-list"></datalist>
+    <button type="submit">Go</button>
+  </form>
+  <div class="wl-nav">
+    <button type="button" id="wl-prev" title="previous stock of the list (arrow up in the list)">&#9650; Previous</button>
+    <span id="wl-pos" class="wl-pos" aria-live="polite"></span>
+    <button type="button" id="wl-next" title="next stock of the list (arrow down in the list)">&#9660; Next</button>
+  </div>
+  <ul id="wl-list" class="wl-list" role="listbox" tabindex="0" aria-label="stocks of the list - arrow keys move up and down"></ul>
+  <form id="wl-add-form" class="wl-add" autocomplete="off">
+    <input id="wl-add" list="ticker-list" placeholder="add ticker(s), e.g. PFE" aria-label="ticker to add" spellcheck="false">
+    <button type="submit">Add</button>
+  </form>
+  <div id="wl-msg" class="wl-msg" role="status"></div>
+  <p class="wl-note" id="wl-note">Lists are saved in the database.</p>
+</aside>
+<section class="chart-area">
+  <div id="status" class="status{{ ' error' if error }}">{{ error or '' }}</div>
+  <div class="titlebar"><h1 id="title-ticker">{{ ticker or 'No data' }}</h1><span class="meta" id="title-meta">{% if not ticker %}nothing to show yet - the daily table has no rows{% endif %}</span>
+    <span class="title-actions">
+      <button type="button" id="sel-toggle" class="wl-toggle hidden" title="the Selected list: the stocks you pick while reviewing charts"></button>
+      <button type="button" id="wl-toggle" class="wl-toggle hidden"></button>
+    </span></div>
+  <div class="toolbar">
+    <div class="intervals" role="group" aria-label="one candle per">
+      {% for i in intervals %}<button type="button" data-interval-button="{{ i }}" class="{{ 'active' if i == chosen_interval }}" title="one candle per {{ {'daily': 'trading day', 'weekly': 'ISO week', 'monthly': 'calendar month'}[i] }}">{{ i|capitalize }}</button>{% endfor %}
+    </div>
+    <div class="ranges" role="group" aria-label="period">
+      {% for r in ranges %}<button type="button" data-range-button="{{ r }}" class="{{ 'active' if r == chosen_range }}">{{ r }}</button>{% endfor %}
+    </div>
+    <label><input type="checkbox" data-ma="20"> MA 20</label>
+    <label><input type="checkbox" data-ma="50"> MA 50</label>
+    <label><input type="checkbox" data-ma="200"> MA 200</label>
+    <span class="spacer"></span>
+    <a id="csv" class="hidden" href="#" download>Download CSV</a>
+  </div>
+  <div class="summary">
+    <div class="card"><div class="label">Last close</div><div class="value" id="s-close">-</div></div>
+    <div class="card"><div class="label">Change <span id="s-period"></span></div><div class="value" id="s-change">-</div></div>
+    <div class="card"><div class="label">Period high</div><div class="value" id="s-high">-</div></div>
+    <div class="card"><div class="label">Period low</div><div class="value" id="s-low">-</div></div>
+    <div class="card"><div class="label" id="l-volume">Avg. daily volume</div><div class="value" id="s-volume">-</div></div>
+    <div class="card"><div class="label" id="l-days">Trading days</div><div class="value" id="s-days">-</div></div>
+  </div>
+  <div class="chart-card"><div id="chart"></div></div>
+  <p class="hint">Hover for the values of a candle · mouse wheel to zoom · drag to move · double-click to reset the period. Green: close &ge; open, red: close &lt; open; the bars below show the volume of each candle.
+  <span id="interval-hint">Daily, weekly (ISO weeks, Monday to Sunday) or monthly candles: a weekly / monthly candle opens with the first and closes with the last trading day of the period; moving averages count candles.</span>
+  Lists: pick the watchlist, your Selected stocks or a screen list (<i>Load screen list</i>: a text file with symbols separated by commas); click a stock, use Previous / Next or the arrow keys in the list, or go to one with the drop-down or by typing its symbol. <i>Add to Selected</i> keeps the stock on show.</p>
+</section>
+</div>
+</main>
+<footer>{{ settings.title }} · standalone chart dashboard (stock_chart {{ version }}) · data: <code>{{ settings.daily_table }}</code>, <code>{{ settings.weekly_table }}</code>, <code>{{ settings.monthly_table }}</code></footer>
+<script src="{{ url_for('static', filename='candlestick.js') }}"></script>
+<script src="{{ url_for('static', filename='watchlist.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

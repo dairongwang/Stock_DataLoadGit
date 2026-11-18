@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Admin - orders{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<h1>Orders</h1>
+{% include "_admin_nav.html" %}
+<div class="card">
+  <form method="get" style="display:flex;gap:8px;align-items:center">
+    <select name="status" style="width:auto"><option value="">all statuses</option>{% for st in ('paid', 'pending', 'failed', 'cancelled') %}<option value="{{ st }}" {% if args.get('status') == st %}selected{% endif %}>{{ st }}</option>{% endfor %}</select>
+    <button class="small secondary" type="submit">Filter</button>
+  </form>
+  {% if orders %}
+  <table>
+    <tr><th>Order</th><th>When</th><th>Customer</th><th>Pack</th><th class="num">Tokens</th><th class="num">Amount</th><th>Status</th><th>Key</th><th>Payment</th></tr>
+    {% for o in orders %}
+    <tr>
+      <td class="mono">{{ o.order_ref }}</td><td class="muted">{{ (o.paid_at or o.created_at)[:16] }}</td>
+      <td>{{ o.email }}{% if o.is_guest %} <span class="badge">guest</span>{% endif %}</td>
+      <td>{{ o.pack }}{% if o.note %}<div class="muted" style="white-space:normal">{{ o.note }}</div>{% endif %}</td>
+      <td class="num">{{ '{:,}'.format(o.tokens) }}</td><td class="num">{{ o.price }}</td>
+      <td><span class="badge {{ 'ok' if o.is_paid else 'warn' if o.status == 'pending' else 'err' }}">{{ o.status }}</span></td>
+      <td class="mono">{{ key_prefixes.get(o.api_key_id, '') }}</td>
+      <td class="muted">{{ o.provider }}{% if o.payment_detail %} - {{ o.payment_detail }}{% endif %}{% if o.provider_ref %}<div class="mono" style="font-size:11px">{{ o.provider_ref }}</div>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No orders.</p>{% endif %}
+</div>
+{% endblock %}

@@ -61,6 +61,46 @@
     <label>File encoding</label><input type="text" name="encoding" value="{{ s.encoding }}">
   </div>
 </fieldset>
+<fieldset><legend>Portal / data API</legend>
+  <div class="form-grid">
+    <label>Portal address</label><span><input type="text" name="portal_host" value="{{ s.portal_host }}" style="width:160px"> : <input type="number" name="portal_port" value="{{ s.portal_port }}" min="1" max="65535" style="width:90px"></span>
+    <span class="help">the public site (<code>python -m stock_dataload portal</code>): token shop, customer accounts, data API</span>
+    <label>Public URL</label><input type="text" name="portal_public_url" value="{{ s.portal_public_url }}" placeholder="https://data.example.com (empty = address of the request)">
+    <label>Payment methods</label><span>{% for m in ('stripe', 'paypal') %}<label style="margin-right:14px"><input type="checkbox" name="payment_methods" value="{{ m }}" {% if m in s.payment_methods %}checked{% endif %}> {{ 'Card via Stripe Checkout' if m == 'stripe' else 'PayPal' }}</label>{% endfor %}</span>
+    <label>Payment gateway</label><select name="payment_gateway"><option value="fake" {% if s.payment_gateway == 'fake' %}selected{% endif %}>fake - built-in STUB of Stripe and PayPal (nothing is charged)</option><option value="live" {% if s.payment_gateway == 'live' %}selected{% endif %}>live - the real Stripe / PayPal APIs</option></select>
+    <span class="help">live needs <code>$STOCK_DATALOAD_STRIPE_SECRET_KEY</code> and the PayPal client id + <code>$STOCK_DATALOAD_PAYPAL_CLIENT_SECRET</code> (or the keys in config.ini)</span>
+    <label>PayPal</label><span><input type="text" name="paypal_client_id" value="{{ s.paypal_client_id }}" placeholder="client id" style="width:260px"> <select name="paypal_environment" style="width:auto"><option value="sandbox" {% if s.paypal_environment == 'sandbox' %}selected{% endif %}>sandbox</option><option value="live" {% if s.paypal_environment == 'live' %}selected{% endif %}>live</option></select></span>
+    <label>Sign in with</label><span>{% for p in ('google', 'apple', 'facebook') %}<label style="margin-right:14px"><input type="checkbox" name="oauth_providers" value="{{ p }}" {% if p in s.oauth_providers %}checked{% endif %}> {{ p|capitalize }}</label>{% endfor %}</span>
+    <label>Identity gateway</label><select name="oauth_gateway"><option value="fake" {% if s.oauth_gateway == 'fake' %}selected{% endif %}>fake - built-in STUB identity provider</option><option value="live" {% if s.oauth_gateway == 'live' %}selected{% endif %}>live - Google / Apple / Facebook</option></select>
+    <span class="help">live needs the client ids below and the secrets in <code>$STOCK_DATALOAD_GOOGLE_CLIENT_SECRET</code>, <code>$STOCK_DATALOAD_FACEBOOK_APP_SECRET</code>, <code>$STOCK_DATALOAD_APPLE_CLIENT_SECRET</code> (or config.ini); redirect URI: <code>&lt;public url&gt;/oauth/&lt;provider&gt;/callback</code></span>
+    <label>Google client id</label><input type="text" name="google_client_id" value="{{ s.google_client_id }}">
+    <label>Facebook app id</label><input type="text" name="facebook_app_id" value="{{ s.facebook_app_id }}">
+    <label>Apple services id</label><input type="text" name="apple_client_id" value="{{ s.apple_client_id }}">
+    <label>Currency</label><input type="text" name="currency" value="{{ s.currency }}" style="width:90px" maxlength="3">
+    <label>Token packs</label><input type="text" name="token_packs" value="{{ packs_text }}">
+    <span class="help">name:tokens:price, comma separated - e.g. <code>Starter:100:5.00, Pro:2000:60.00</code></span>
+    <label>Tokens per ticker-year</label><input type="number" name="tokens_per_query" value="{{ s.tokens_per_query }}" min="1" style="width:90px">
+    <label>Max tickers per request</label><input type="number" name="max_tickers_per_request" value="{{ s.max_tickers_per_request }}" min="1" style="width:90px">
+  </div>
+</fieldset>
+<fieldset><legend>Accounts, e-mail and sms</legend>
+  <div class="form-grid">
+    <label>Issuer name</label><input type="text" name="issuer" value="{{ s.issuer }}">
+    <span class="help">shown in authenticator apps and in the messages</span>
+    <label>E-mail verification</label><span><input type="checkbox" name="require_email_verification" {% if s.require_email_verification %}checked{% endif %}> a new portal account must confirm its e-mail address with a code</span>
+    <label>Admins need 2FA</label><span><input type="checkbox" name="admin_requires_2fa" {% if s.admin_requires_2fa %}checked{% endif %}> portal administrators must set up a second factor before the admin pages open</span>
+    <label>Code / link validity</label><span><input type="number" name="code_ttl_minutes" value="{{ s.code_ttl_minutes }}" min="1" style="width:70px"> min for codes, <input type="number" name="reset_ttl_minutes" value="{{ s.reset_ttl_minutes }}" min="1" style="width:70px"> min for password-reset links</span>
+    <label>Mail provider</label><select name="mail_provider"><option value="console" {% if s.mail_provider == 'console' %}selected{% endif %}>console - STUB, printed to the console</option><option value="smtp" {% if s.mail_provider == 'smtp' %}selected{% endif %}>smtp - a real mail server</option><option value="memory" {% if s.mail_provider == 'memory' %}selected{% endif %}>memory - STUB for tests</option></select>
+    <label>From address</label><input type="text" name="mail_from" value="{{ s.mail_from }}">
+    <label>SMTP server</label><span><input type="text" name="smtp_host" value="{{ s.smtp_host }}" style="width:240px" placeholder="mail.example.com"> : <input type="number" name="smtp_port" value="{{ s.smtp_port }}" style="width:80px"> <input type="checkbox" name="smtp_starttls" {% if s.smtp_starttls %}checked{% endif %}> STARTTLS</span>
+    <label>SMTP user</label><input type="text" name="smtp_user" value="{{ s.smtp_user }}">
+    <span class="help">the SMTP password is not edited here - set <code>$STOCK_DATALOAD_SMTP_PASSWORD</code> (or <code>[mail] smtp_password</code> in config.ini)</span>
+    <label>SMS provider</label><select name="sms_provider"><option value="console" {% if s.sms_provider == 'console' %}selected{% endif %}>console - STUB, printed to the console</option><option value="twilio" {% if s.sms_provider == 'twilio' %}selected{% endif %}>twilio</option><option value="memory" {% if s.sms_provider == 'memory' %}selected{% endif %}>memory - STUB for tests</option></select>
+    <label>Twilio account SID</label><input type="text" name="twilio_account_sid" value="{{ s.twilio_account_sid }}">
+    <label>Twilio from number</label><input type="text" name="twilio_from" value="{{ s.twilio_from }}" placeholder="+15550000000">
+    <span class="help">the auth token is not edited here - set <code>$STOCK_DATALOAD_TWILIO_AUTH_TOKEN</code> (or <code>[sms] twilio_auth_token</code>)</span>
+  </div>
+</fieldset>
 </div>
 </div>
 <div class="actions"><button type="submit">Save settings</button><a class="btn secondary" href="{{ url_for('index') }}">Cancel</a></div>

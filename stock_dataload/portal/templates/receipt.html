@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Order {{ order.order_ref }}{% endblock %}
+{% block content %}
+<h1>{% if just_paid %}Thank you - your tokens are ready{% else %}Order {{ order.order_ref }}{% endif %}</h1>
+
+{% if just_paid and not plain_key and key %}
+<div class="card" style="border-color:#86efac;background:#f0fdf4">
+  <h3 style="margin-top:0">Key {{ key.display }} topped up</h3>
+  <p style="margin:0">{{ '{:,}'.format(order.tokens) }} tokens were added to your existing key - it now has <b>{{ '{:,}'.format(key.balance) }}</b> tokens. The key itself is unchanged.</p>
+</div>
+{% endif %}
+{% if plain_key %}
+<div class="card" style="border-color:#86efac;background:#f0fdf4">
+  <h3 style="margin-top:0">Your API key</h3>
+  <div class="keybox" id="apikey">{{ plain_key }}</div>
+  <p style="margin:10px 0 0"><b>Copy it now - it is shown only this once.</b> We store only a fingerprint of the key. If you lose it, generate a new one from this receipt (order reference + e-mail) or from your account; the balance stays.</p>
+  <div class="actions"><button type="button" class="small secondary" onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('apikey').textContent).then(function(){document.getElementById('copied').textContent='copied';})">Copy key</button><span id="copied" class="ok"></span></div>
+</div>
+{% endif %}
+
+<div class="grid2">
+<div class="card">
+  <h3 style="margin-top:0">Receipt</h3>
+  <table>
+    <tr><th>Order</th><td class="mono"><b>{{ order.order_ref }}</b></td></tr>
+    <tr><th>Status</th><td>{% if order.is_paid %}<span class="badge ok">paid</span>{% elif order.status == 'pending' %}<span class="badge warn">pending</span>{% else %}<span class="badge err">{{ order.status }}</span>{% endif %}</td></tr>
+    <tr><th>Pack</th><td>{{ order.pack }} - {{ '{:,}'.format(order.tokens) }} tokens</td></tr>
+    <tr><th>Amount</th><td>{{ order.price }}</td></tr>
+    <tr><th>Payment</th><td>{{ order.payment_detail or order.provider }}{% if order.provider_ref %} <span class="muted mono">{{ order.provider_ref }}</span>{% endif %}</td></tr>
+    <tr><th>E-mail</th><td>{{ order.email }}{% if order.is_guest %} <span class="badge">guest</span>{% endif %}</td></tr>
+    <tr><th>Date</th><td>{{ order.paid_at or order.created_at }}</td></tr>
+  </table>
+  {% if not order.is_paid and order.status == 'pending' %}<p class="muted">The payment has not been confirmed yet. If you closed the payment page, <a href="{{ url_for('buy') }}">start again</a> - nothing was charged.</p>{% endif %}
+</div>
+<div class="card">
+  <h3 style="margin-top:0">API key</h3>
+  {% if key %}
+  <table>
+    <tr><th>Key</th><td class="mono">{{ key.display }}{% if key.label %} <span class="muted">({{ key.label }})</span>{% endif %}</td></tr>
+    <tr><th>Tokens left</th><td><b>{{ '{:,}'.format(key.balance) }}</b> of {{ '{:,}'.format(key.tokens_purchased) }} purchased</td></tr>
+    <tr><th>Status</th><td>{% if key.is_active %}<span class="badge ok">active</span>{% else %}<span class="badge err">revoked</span>{% endif %}</td></tr>
+    <tr><th>Last used</th><td>{{ key.last_used_at or 'never' }}</td></tr>
+  </table>
+  {% if key.is_active and not plain_key %}
+  <form method="post" action="{{ url_for('order_rotate_key', ref=order.order_ref) }}" onsubmit="return confirm('Generate a new key? The current key stops working immediately.')" style="margin-top:10px">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <button class="small secondary" type="submit">Lost the key? Generate a new one</button>
+  </form>
+  {% endif %}
+  <p class="muted" style="font-size:12px">Check the balance any time: <code>GET {{ base_url() }}/api/v1/balance</code> with the key.</p>
+  {% else %}<p class="muted">The key is created when the payment is confirmed.</p>{% endif %}
+</div>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">Try it</h3>
+<pre><code>curl -H "Authorization: Bearer {{ plain_key or 'sdl_your_key' }}" \
+  "{{ base_url() }}/api/v1/daily?ticker=AAPL&amp;year={{ sample_year }}"</code></pre>
+  <p class="muted" style="font-size:13px">See the <a href="{{ url_for('docs') }}">API documentation</a> for all endpoints and the CSV format.</p>
+</div>
+{% if order.is_guest and not current_customer %}
+<p class="muted">Want to manage keys and see usage in one place? <a href="{{ url_for('signup', email=order.email) }}">Create an account</a> with this e-mail address and the order reference <b>{{ order.order_ref }}</b> - the key and its tokens are linked to it.</p>
+{% endif %}
+{% endblock %}

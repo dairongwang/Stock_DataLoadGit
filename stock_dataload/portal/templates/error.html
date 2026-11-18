@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ status }}{% endblock %}
+{% block content %}
+<div class="card" style="max-width:520px;margin:40px auto;text-align:center">
+  <h1>{{ status }}</h1>
+  <p>{{ message }}</p>
+  <a class="btn secondary" href="{{ url_for('index') }}">Back to the start page</a>
+</div>
+{% endblock %}

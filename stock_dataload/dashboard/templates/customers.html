@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Customers{% endblock %}
+{% block content %}
+<div class="toolbar"><h1 style="margin:0">Customers &amp; data API</h1>
+  <span class="muted">the public portal (<code>python -m stock_dataload portal</code>, port {{ settings.portal_port }}): token shop, customer accounts and the token-metered data API - payments via <b>{{ settings.payment_methods|join(' + ') }}</b>{% if settings.payment_gateway == 'fake' %} (fake gateway - test mode){% endif %}</span></div>
+
+<div class="stats" style="grid-template-columns:repeat(6,1fr);gap:10px">
+  <div class="card stat-card"><span class="stat">{{ '{:,}'.format(stats.get('customers', 0)) }}</span><br><span class="muted">customers<br>{{ stats.get('accounts', 0) }} accounts · {{ stats.get('guests', 0) }} guests</span></div>
+  <div class="card stat-card"><span class="stat">{{ '{:,}'.format(stats.get('active_keys', 0)) }}</span><br><span class="muted">active keys<br>of {{ stats.get('keys', 0) }}</span></div>
+  <div class="card stat-card"><span class="stat">{{ '{:,.2f}'.format(stats.get('revenue', 0) / 100) }}</span><br><span class="muted">{{ stats.get('currency', '') }} revenue<br>{{ stats.get('paid_orders', 0) }} paid orders{% if stats.get('pending_orders') %} · {{ stats.pending_orders }} pending{% endif %}</span></div>
+  <div class="card stat-card"><span class="stat">{{ '{:,}'.format(stats.get('tokens_sold', 0)) }}</span><br><span class="muted">tokens sold / granted</span></div>
+  <div class="card stat-card"><span class="stat">{{ '{:,}'.format(stats.get('tokens_used', 0)) }}</span><br><span class="muted">tokens used<br>{{ '{:,}'.format(stats.get('tokens_outstanding', 0)) }} outstanding</span></div>
+  <div class="card stat-card {{ 'warnish' if stats.get('refused_requests') }}"><span class="stat">{{ '{:,}'.format(stats.get('requests', 0)) }}</span><br><span class="muted">API requests<br>{{ stats.get('refused_requests', 0) }} refused (no tokens)</span></div>
+</div>
+
+<div class="card">
+  <form method="get" class="toolbar">
+    <h2 style="margin:0">Customers and keys</h2>
+    <input type="text" name="q" value="{{ args.get('q', '') }}" placeholder="e-mail or name" style="width:240px">
+    <button class="small secondary" type="submit">Search</button>
+    {% if args.get('q') %}<a class="btn small secondary" href="{{ url_for('customers') }}">clear</a>{% endif %}
+    <span class="muted" style="margin-left:auto">token packs: {% for p in packs %}{{ p.name }} {{ p.tokens }} = {{ p.price }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
+  </form>
+  {% if rows %}
+  <div style="overflow:auto">
+  <table style="font-size:12px">
+    <tr><th>Customer</th><th>Type</th><th>Since</th><th>Key</th><th>Label</th><th class="num">Balance</th><th class="num">Bought</th><th class="num">Used</th><th>Last used</th><th>Grant tokens</th><th></th></tr>
+    {% for c, keys in rows %}
+    {% set rowspan = keys|length if keys else 1 %}
+    {% for k in keys %}
+    <tr class="{{ '' if c.active else 'resolved' }}">
+      {% if loop.first %}
+      <td rowspan="{{ rowspan }}"><b>{{ c.email }}</b>{% if c.display_name %}<div class="muted">{{ c.display_name }}</div>{% endif %}
+        {% if not c.active %}<span class="badge err">disabled</span>{% endif %}
+        <form method="post" action="{{ url_for('customer_toggle', customer_id=c.customer_id) }}" class="inline" onsubmit="return confirm('{{ 'Disable' if c.active else 'Enable' }} customer {{ c.email }}? {{ 'Their keys stop working.' if c.active }}')"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small {{ 'danger' if c.active else 'secondary' }}" type="submit" style="margin-top:4px">{{ 'Disable customer' if c.active else 'Enable customer' }}</button></form></td>
+      <td rowspan="{{ rowspan }}"><span class="badge {{ 'type' if not c.is_guest }}">{{ 'guest' if c.is_guest else 'account' }}</span></td>
+      <td rowspan="{{ rowspan }}" class="muted">{{ c.created_at[:10] }}</td>
+      {% endif %}
+      <td class="mono">{{ k.display }}{% if not k.active %} <span class="badge err">off</span>{% endif %}</td>
+      <td>{{ k.label or '' }}</td>
+      <td class="num"><b>{{ '{:,}'.format(k.balance) }}</b></td>
+      <td class="num">{{ '{:,}'.format(k.tokens_purchased) }}</td>
+      <td class="num">{{ '{:,}'.format(k.tokens_used) }}</td>
+      <td class="muted">{{ (k.last_used_at or '-')[:16] }}</td>
+      <td>{% if k.active %}<form method="post" action="{{ url_for('customer_key_grant', api_key_id=k.api_key_id) }}" class="inline" style="white-space:nowrap">
+        <input type="hidden" name="q" value="{{ args.get('q', '') }}">
+        <input type="number" name="tokens" min="1" value="100" style="width:62px;padding:3px 5px"> <input type="text" name="note" placeholder="note" style="width:84px;padding:3px 5px"> <button class="small secondary" type="submit">Grant</button></form>{% endif %}</td>
+      <td style="white-space:nowrap">
+        <form method="post" action="{{ url_for('customer_key_toggle', api_key_id=k.api_key_id) }}" class="inline"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small {{ 'danger' if k.active else 'secondary' }}" type="submit">{{ 'Disable key' if k.active else 'Enable key' }}</button></form>
+      </td>
+    </tr>
+    {% else %}
+    <tr class="{{ '' if c.active else 'resolved' }}">
+      <td><b>{{ c.email }}</b>{% if c.display_name %}<div class="muted">{{ c.display_name }}</div>{% endif %}</td>
+      <td><span class="badge {{ 'type' if not c.is_guest }}">{{ 'guest' if c.is_guest else 'account' }}</span></td>
+      <td class="muted">{{ c.created_at[:10] }}</td>
+      <td colspan="7" class="muted">no key yet</td>
+      <td><form method="post" action="{{ url_for('customer_toggle', customer_id=c.customer_id) }}" class="inline"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small {{ 'danger' if c.active else 'secondary' }}" type="submit">{{ 'Disable customer' if c.active else 'Enable customer' }}</button></form></td>
+    </tr>
+    {% endfor %}
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">No customers yet - they appear here when somebody buys tokens or creates an account on the portal.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Recent orders</h2>
+  <form method="get" class="toolbar"><input type="hidden" name="q" value="{{ args.get('q', '') }}">
+    <select name="status"><option value="">all statuses</option>{% for st in ('paid', 'pending', 'failed', 'cancelled') %}<option value="{{ st }}" {% if args.get('status') == st %}selected{% endif %}>{{ st }}</option>{% endfor %}</select>
+    <button class="small secondary" type="submit">Filter</button></form>
+  {% if orders %}
+  <table>
+    <tr><th>Order</th><th>When</th><th>Customer</th><th>Pack</th><th class="num">Tokens</th><th class="num">Amount</th><th>Status</th><th>Key</th><th>Payment</th></tr>
+    {% for o in orders %}
+    <tr>
+      <td class="mono">{{ o.order_ref }}</td>
+      <td class="muted">{{ (o.paid_at or o.created_at)[:16] }}</td>
+      <td>{{ o.email }}{% if o.is_guest %} <span class="badge">guest</span>{% endif %}</td>
+      <td>{{ o.pack }}{% if o.note %}<div class="note muted">{{ o.note }}</div>{% endif %}</td>
+      <td class="num">{{ '{:,}'.format(o.tokens) }}</td>
+      <td class="num">{{ o.price }}</td>
+      <td>{% if o.is_paid %}<span class="badge ok">paid</span>{% elif o.status == 'pending' %}<span class="badge warn">pending</span>{% else %}<span class="badge err">{{ o.status }}</span>{% endif %}</td>
+      <td class="mono">{{ key_prefixes.get(o.api_key_id, '') }}</td>
+      <td class="muted">{{ o.provider }}{% if o.payment_detail %} - {{ o.payment_detail }}{% endif %}{% if o.provider_ref %}<div class="note mono">{{ o.provider_ref }}</div>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No orders.</p>{% endif %}
+</div>
+<div class="card">
+  <h2>Recent API requests</h2>
+  {% if usage %}
+  <table>
+    <tr><th>When</th><th>Key</th><th>Data</th><th>Tickers</th><th>Year</th><th class="num">Tokens</th><th class="num">Rows</th><th>Status</th><th>From</th></tr>
+    {% for u in usage %}
+    <tr>
+      <td class="muted">{{ u.requested_at[5:16] }}</td>
+      <td class="mono">{{ key_prefixes.get(u.api_key_id, u.api_key_id) }}</td>
+      <td>{{ u.endpoint }}</td>
+      <td class="mono">{{ (u.tickers or '')[:40] }}</td>
+      <td>{{ u.year or '' }}</td>
+      <td class="num">{{ u.tokens }}</td>
+      <td class="num">{{ '{:,}'.format(u.rows) }}</td>
+      <td>{% if u.status == 'ok' %}<span class="badge ok">ok</span>{% else %}<span class="badge err">{{ u.status }}</span>{% endif %}</td>
+      <td class="muted">{{ u.remote_addr or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No API requests yet.</p>{% endif %}
+</div>
+<p class="muted">JSON: <code>/api/customers</code>. Customers manage their own keys on the portal; use <b>Grant</b> for refunds, trials and invoiced deals (recorded as a paid order of the <code>manual</code> provider with amount 0).</p>
+{% endblock %}

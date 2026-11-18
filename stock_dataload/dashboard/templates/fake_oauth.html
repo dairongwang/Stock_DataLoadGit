@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}{{ label }} - test sign-in page{% endblock %}
+{% block content %}
+<div class="card login-card" style="max-width:480px;border-color:#fde68a">
+  <div class="flash info"><b>Built-in stub of "Sign in with {{ label }}".</b> It stands in for {{ label }}'s consent page so the flow can be tried out without app credentials. Type any e-mail address - it becomes the signed-in identity.</div>
+  <h1>Continue to Stock Data Load with {{ label }}</h1>
+  <form method="post" action="{{ url_for('fake_oauth', provider=provider) }}">
+    <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}"><input type="hidden" name="state" value="{{ state }}">
+    <div class="form-grid" style="grid-template-columns:120px 1fr">
+      <label for="email">E-mail</label><input type="email" id="email" name="email" required autofocus placeholder="you@{{ 'gmail.com' if provider == 'google' else 'icloud.com' if provider == 'apple' else 'example.com' }}">
+      <label for="name">Name</label><input type="text" id="name" name="name" placeholder="optional">
+    </div>
+    <div class="actions">
+      <button type="submit" name="action" value="allow">Continue</button>
+      <button type="submit" name="action" value="cancel" class="secondary" formnovalidate>Cancel</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

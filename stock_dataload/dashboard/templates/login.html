@@ -4,15 +4,20 @@
 <div class="card login-card">
   <h1>Sign in</h1>
   {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  {% if oauth_providers %}
+  <div class="toolbar">{% for name, p in oauth_providers.items() %}<a class="btn secondary" href="{{ url_for('oauth_start', provider=name, next=(next or '')) }}">Continue with {{ p.label }}</a>{% endfor %}</div>
+  {% if oauth_fake %}<p class="muted" style="font-size:12px;margin:0 0 6px">(test mode - a built-in stub stands in for {{ oauth_providers.values()|map(attribute='label')|join(', ') }})</p>{% endif %}
+  <p class="muted" style="text-align:center;font-size:12px">- or -</p>
+  {% endif %}
   <form method="post" action="{{ url_for('login') }}">
     <input type="hidden" name="next" value="{{ next or '' }}">
     <div class="form-grid" style="grid-template-columns:120px 1fr">
       <label for="username">User name</label><input type="text" id="username" name="username" value="{{ username or '' }}" autofocus required autocomplete="username">
       <label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="current-password">
     </div>
-    <div class="actions"><button type="submit">Sign in</button></div>
+    <div class="actions"><button type="submit">Sign in</button>{% if registration_open %}<a class="btn secondary" href="{{ url_for('register') }}">Create account</a>{% endif %}<a href="{{ url_for('forgot_password') }}" style="margin-left:auto;font-size:12px">Forgot your password?</a></div>
   </form>
-  <p class="muted" style="font-size:12px">No account yet? The initial administrator was created when the dashboard first started
-  (the one-time password was printed to the console); administrators add further users on the <b>Users</b> page.</p>
+  <p class="muted" style="font-size:12px">{% if registration_open %}New here? <a href="{{ url_for('register') }}">Create an account</a> (read-only until an administrator grants more). {% endif %}The initial administrator
+  is created when the dashboard starts with an empty user table - its one-time password is printed to the console.</p>
 </div>
 {% endblock %}

@@ -29,6 +29,7 @@ def make_settings(root: Path) -> Settings:
     s.skipped_dir = root / "skipped"
     s.work_dir = root / "work"
     s.log_dir = root / "logs"
+    s.eod_download_dir = root / "api_downloads"
     s.sqlite_path = root / "test.db"
     s.secret_key_file = root / ".secret_key"
     s.batch_size = 1000

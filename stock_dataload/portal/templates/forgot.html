@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Forgot your password{% endblock %}
+{% block content %}
+<div class="card" style="max-width:480px;margin:30px auto">
+  <h1>Forgot your password?</h1>
+  {% if sent %}
+    <div class="flash success">If an account exists for <b>{{ email }}</b>, a link to choose a new password is on its way. It is valid for {{ settings.reset_ttl_minutes }} minutes.</div>
+    {% if mail_stub %}<div class="notice">Mail is in <b>stub mode</b> - the link was printed to the server console, no e-mail was sent.</div>{% endif %}
+    <p class="muted" style="font-size:13px">Nothing arrived? Check the spam folder, or <a href="{{ url_for('forgot_password', email=email) }}">try again</a> in a minute.</p>
+  {% else %}
+    <p class="muted">Enter the e-mail address of your account and we will send you a link to choose a new one.</p>
+    <form method="post" action="{{ url_for('forgot_password') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <div class="form-grid" style="grid-template-columns:120px 1fr">
+        <label for="email">E-mail</label><input type="email" id="email" name="email" value="{{ email }}" required autofocus autocomplete="email">
+      </div>
+      <div class="actions"><button type="submit">Send reset link</button><a class="btn secondary" href="{{ url_for('login') }}">Back to sign in</a></div>
+    </form>
+  {% endif %}
+</div>
+{% endblock %}

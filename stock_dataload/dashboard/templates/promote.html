@@ -32,11 +32,14 @@ summed volume). Rejected rows are listed under <a href="{{ url_for('monitor_data
           <option value="daily">daily: staging &rarr; {{ settings.daily_table }}</option>
           <option value="weekly">weekly: daily &rarr; {{ settings.weekly_table }}</option>
           <option value="monthly">monthly: daily &rarr; {{ settings.monthly_table }}</option>
+          <option value="eod">eod: {{ settings.eod_stage_table }} (EOD API) &rarr; {{ settings.daily_table }}, adjusted prices</option>
         </select>
         <label>Mode</label><span><input type="checkbox" name="full"> full - re-promote everything (default: only what changed since the last run)</span>
         <label>Ticker</label><input type="text" name="ticker" placeholder="optional, e.g. AAPL" style="width:160px">
         <label>Source file</label><input type="text" name="source_file" placeholder="daily only, e.g. NASDAQ_20230103.txt" style="width:260px">
-        <label>Trade dates</label><span><input type="text" name="date_from" placeholder="from YYYYMMDD" style="width:130px"> <input type="text" name="date_to" placeholder="to YYYYMMDD" style="width:130px"> <span class="muted">(daily only)</span></span>
+        <label>Trade dates</label><span><input type="text" name="date_from" placeholder="from YYYYMMDD" style="width:130px"> <input type="text" name="date_to" placeholder="to YYYYMMDD" style="width:130px"> <span class="muted">(daily / eod)</span></span>
+        <label>EOD symbol</label><span><input type="text" name="symbol" placeholder="eod only, e.g. MRK or MRK.US" style="width:200px">
+          <input type="text" name="market" placeholder="market, e.g. NYSE" style="width:150px"> <span class="muted">(eod only; market default: symbol table / daily table{% if settings.eod_default_market %} / {{ settings.eod_default_market }}{% endif %})</span></span>
       </div>
       <div class="actions"><button type="submit">Run promotion</button></div>
     </form>
@@ -61,6 +64,14 @@ summed volume). Rejected rows are listed under <a href="{{ url_for('monitor_data
       <tr><td class="mono">incomplete_week<br>incomplete_month</td><td class="wrap">a trading day of the period - the market open (trading calendar), inside the stock's trading window (symbol table), between the first and the last delivery loaded - has no daily row. The aggregate is still written from the days there are, with <code>Complete = no</code> and the missing dates; the finding is resolved once the gap is filled <span class="muted">({{ 'on' if settings.check_completeness else 'off' }} - settings)</span></td></tr>
     </table>
     <p class="muted" style="margin-bottom:0">When the same stock/day is staged more than once, the most recently loaded row wins. Existing active rows are only updated when something changed.</p>
+    <h2 style="margin-top:14px">Promote eod (EOD API data)</h2>
+    <p class="muted" style="margin:0 0 6px">Moves <code>{{ settings.eod_stage_table }}</code> into <code>{{ settings.daily_table }}</code> converted to adjusted prices:
+    <b>rate = AdjustedClose / Close</b>; open, high, low &times; rate; close = AdjustedClose; volume as is. Symbol, trade date and market are matched
+    (market: the form, else the symbol table, else the ticker's market in the daily table{% if settings.eod_default_market %}, else {{ settings.eod_default_market }}{% endif %}). The daily rules apply to the converted values, plus:</p>
+    <table>
+      <tr><td class="mono">market_unknown</td><td class="wrap">no market could be determined for the symbol</td></tr>
+      <tr><td class="mono">market_mismatch</td><td class="wrap">{{ settings.daily_table }} already has the ticker and day under another market - it is not overwritten</td></tr>
+    </table>
   </div>
 </div>
 {% endif %}

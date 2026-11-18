@@ -1,0 +1,8 @@
+# Optional developer extras (install on top of requirements.txt):
+#   python -m pip install -r requirements-dev.txt
+-r requirements.txt
+# real-browser dashboard tests (tests/test_dashboard_browser.py); then: python -m playwright install chromium
+# (needs a Python version playwright publishes wheels for - the tests are skipped when it is missing)
+playwright>=1.56
+# QR codes on the two-factor enrolment pages
+qrcode>=7.4

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Buy tokens{% endblock %}
+{% block content %}
+<h1>Buy tokens</h1>
+<p class="muted">One token pays for <b>one ticker for one year</b> of daily, weekly or monthly data ({{ settings.tokens_per_query }} token{{ 's' if settings.tokens_per_query != 1 }} per ticker and year). Tokens never expire.
+{% if not current_customer %}No account needed - or <a href="{{ url_for('login', next=url_for('buy')) }}">sign in</a> to put the tokens on one of your keys.{% endif %}</p>
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+{% if payments_fake %}<div class="notice" style="margin-bottom:14px"><b>Test mode.</b> Payments go to a built-in stub of {{ providers.values()|map(attribute='label')|join(' and ') }} - you will see a test payment page with <i>Pay</i> and <i>Cancel</i> buttons. Nothing is charged.</div>{% endif %}
+
+<form method="post" action="{{ url_for('buy_submit') }}" id="buyform">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+
+  <fieldset>
+    <legend>1. Choose a pack</legend>
+    {% set selected = chosen or (form.get('pack') or '') %}
+    <div class="packs">
+      {% for p in packs %}
+      <div class="pack {{ 'selected' if selected == p.key }}">
+        <label for="pack_{{ p.key }}">
+          <input type="radio" id="pack_{{ p.key }}" name="pack" value="{{ p.key }}" {% if selected == p.key or (not selected and loop.first) %}checked{% endif %} required>
+          <div class="name">{{ p.name }}</div>
+          <div class="tokens">{{ '{:,}'.format(p.tokens) }} <small>tokens</small></div>
+          <div class="price">{{ p.price }}</div>
+          <div class="per">{{ p.per_token }} per token</div>
+        </label>
+      </div>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Where the tokens go</legend>
+    {% if current_customer %}
+    <div class="form-grid">
+      <label for="key_choice">API key</label>
+      <select id="key_choice" name="key_choice">
+        <option value="new" {% if form.get('key_choice', 'new') == 'new' %}selected{% endif %}>a new key</option>
+        {% for k in keys %}<option value="{{ k.api_key_id }}" {% if form.get('key_choice') == k.api_key_id|string %}selected{% endif %}>top up {{ k.display }}{% if k.label %} ({{ k.label }}){% endif %} - {{ '{:,}'.format(k.balance) }} tokens left</option>{% endfor %}
+      </select>
+      <label for="key_label">Label of a new key</label>
+      <input type="text" id="key_label" name="key_label" value="{{ form.get('key_label', '') }}" maxlength="60" placeholder="optional, e.g. research notebook">
+      <span class="help">the receipt goes to {{ current_customer.email }}; everything is also on your <a href="{{ url_for('account') }}">account page</a></span>
+    </div>
+    {% else %}
+    <div class="form-grid">
+      <label for="email">E-mail address</label>
+      <input type="email" id="email" name="email" value="{{ form.get('email', '') }}" required autocomplete="email">
+      <span class="help">for the receipt and to find the order again - we do not send newsletters</span>
+      <label for="email_confirm">Repeat e-mail</label>
+      <input type="email" id="email_confirm" name="email_confirm" value="{{ form.get('email_confirm', '') }}" required autocomplete="email">
+      <label for="topup_key">Top up a key</label>
+      <input type="text" id="topup_key" name="topup_key" value="" class="mono" placeholder="optional - paste an existing key (sdl_…)" autocomplete="off">
+      <span class="help">leave empty to get a new key; paste a key you already have to add the tokens to it</span>
+      <label for="key_label">Label of a new key</label>
+      <input type="text" id="key_label" name="key_label" value="{{ form.get('key_label', '') }}" maxlength="60" placeholder="optional">
+    </div>
+    {% endif %}
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Payment</legend>
+    {% for name, p in providers.items() %}
+    <div class="checkbox" style="margin-bottom:8px">
+      <input type="radio" id="pm_{{ name }}" name="payment_method" value="{{ name }}" {% if form.get('payment_method') == name or (not form.get('payment_method') and loop.first) %}checked{% endif %} required>
+      <label for="pm_{{ name }}"><b>{{ p.label }}</b><br><span class="muted">{{ p.notice }}</span></label>
+    </div>
+    {% endfor %}
+    <p class="muted" style="font-size:12px;margin:6px 0 0">You pay on the provider's secure page - this site never sees or stores card details.</p>
+  </fieldset>
+
+  <div class="checkbox">
+    <input type="checkbox" id="terms" name="terms" {% if form.get('terms') == 'on' %}checked{% endif %} required>
+    <label for="terms">I accept the terms of use: the data is provided as is, for my own use; tokens are not refundable once used.</label>
+  </div>
+  <div class="actions"><button type="submit" class="big">Continue to payment</button>
+    <a class="btn secondary" href="{{ url_for('index') }}#pricing">Back</a></div>
+</form>
+<script>
+  document.querySelectorAll('.pack input[type=radio]').forEach(function (r) {
+    r.addEventListener('change', function () {
+      document.querySelectorAll('.pack').forEach(function (p) { p.classList.remove('selected'); });
+      r.closest('.pack').classList.add('selected');
+    });
+  });
+</script>
+{% endblock %}

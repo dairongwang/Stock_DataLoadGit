@@ -11,6 +11,8 @@
     <div class="help">2-64 characters: letters, digits, '.', '_', '@' or '-'</div>
     {% endif %}
     <label for="display_name">Name</label><input type="text" id="display_name" name="display_name" value="{{ form.get('display_name') or '' }}">
+    <label for="email">E-mail</label><input type="email" id="email" name="email" value="{{ form.get('email') or '' }}" autocomplete="off">
+    <div class="help">for password-reset links and e-mail sign-in codes (optional)</div>
     <label for="role">Role</label>
     <select id="role" name="role" style="width:100%">
       {% for r in roles %}<option value="{{ r }}" {% if form.get('role', 'viewer') == r %}selected{% endif %}>{{ role_labels[r] }}</option>{% endfor %}

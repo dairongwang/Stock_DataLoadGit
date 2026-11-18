@@ -472,6 +472,265 @@ class BrowserDashboardTests(TempProjectTestCase):
             pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_calendar.png"),
                           full_page=True)
 
+    def test_api_loading_page_by_clicking(self):
+        """API loading: type stocks -> start with the built-in stub -> live progress -> run page; the market tab."""
+        import json as _json
+        from stock_dataload.eod_symbols import SymbolListLoader
+        SymbolListLoader(self.state.settings).load_text("NYSE", _json.dumps([
+            {"Code": c, "Name": c, "Country": "USA", "Exchange": "NYSE", "Currency": "USD", "Type": t, "Isin": None}
+            for c, t in (("HD", "Common Stock"), ("JNJ", "Common Stock"), ("PFE", "Common Stock"),
+                         ("SPY", "ETF"))]), "json", source_file="test-list.json")
+        self.state.settings.eod_api_retry_backoff = 0.0
+        pg = self.page
+        pg.goto(self.base + "/")
+        pg.click("header nav >> text=API loading")
+        pg.wait_for_load_state()
+        self.assertEqual(pg.title(), "API loading - dashboard")
+        self.assertFalse(pg.is_visible("#stop-button"))
+        # the market tab: the symbol types of the list with their counts
+        pg.click(".mode-tabs >> text=Whole market")
+        self.assertFalse(pg.is_visible("#symbols"))
+        self.assertIn("Common Stock (3)", pg.locator("#types-box").inner_text())
+        self.assertIn("= 3 stock(s)", pg.inner_text("#market-count"))
+        pg.fill("#limit", "2")
+        self.assertIn("= 2 stock(s)", pg.inner_text("#market-count"))
+        # typed-in stocks with the stub and one simulated failure
+        pg.click(".mode-tabs >> text=Selected stocks")
+        pg.fill("#symbols", "hd, jnj, PFE")
+        pg.click("details.details summary")
+        pg.check("input[name=fake]")
+        pg.fill("#fake_faults", "JNJ:503x1")
+        pg.check("input[name=aggregates]")
+        pg.click("#start-button")
+        pg.wait_for_load_state()
+        self.assertIn("Started: 3 selected stock(s) (NYSE)", self.flashes()[0])
+        pg.wait_for_selector("#job-status:text('finished')", timeout=60000)
+        self.assertEqual(pg.inner_text("#job-run-status"), "completed")
+        self.assertEqual((pg.inner_text("#job-loaded"), pg.inner_text("#job-failed"), pg.inner_text("#job-calls")),
+                         ("3", "0", "4"))                                  # JNJ: one retry
+        self.assertIn("promote_weekly", pg.inner_text("#job-log"))
+        self.assertFalse(pg.is_disabled("#start-button"))
+        pg.wait_for_selector("#runs-table .badge:text('completed')", timeout=30000)   # reloaded: the new run
+        self.assertEqual(pg.inner_text("#job-status"), "finished")
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_api_load.png"),
+                          full_page=True)
+        pg.click("#job-run a")
+        pg.wait_for_load_state()
+        self.assertTrue(pg.title().startswith("API load run"))
+        row = pg.locator("#run-items tr", has_text="JNJ").inner_text()
+        self.assertIn("loaded", row)
+        self.assertIn("2", row)                                            # attempts
+        with self.state.db.connection() as conn:
+            tickers = {r[0] for r in conn.execute('SELECT DISTINCT "Ticker" FROM "Stock_Daily"')}
+        self.assertEqual(tickers, {"HD", "JNJ", "PFE"})
+
+    def test_daily_limit_of_whole_market_loads_in_the_browser(self):
+        """At most 3 whole-market loads per market and day: the page blocks a 4th one (button disabled,
+        notice shown) and the server refuses it too when the page is bypassed."""
+        import json as _json
+        from stock_dataload.eod_market import MarketFetcher
+        from stock_dataload.eod_symbols import SymbolListLoader
+        SymbolListLoader(self.state.settings).load_text("NYSE", _json.dumps([
+            {"Code": c, "Name": c, "Country": "USA", "Exchange": "NYSE", "Currency": "USD", "Type": "Common Stock",
+             "Isin": None} for c in ("HD", "JNJ", "MRK", "PFE")]), "json", source_file="test-list.json")
+        for _ in range(3):
+            MarketFetcher(self.state.settings, fake=True, sleep=lambda s: None).fetch_market("NYSE", limit=1)
+        pg = self.page
+        pg.goto(self.base + "/api-load")
+        self.assertIn("NYSE 3/3", pg.inner_text("#quota-strip"))
+        self.assertFalse(pg.is_visible("#quota-block"))                    # selected stocks: no limit
+        self.assertFalse(pg.is_disabled("#start-button"))
+        pg.click(".mode-tabs >> text=Whole market")
+        self.assertTrue(pg.is_visible("#quota-block"))
+        self.assertIn("may run at most 3 times a day", pg.inner_text("#quota-block"))
+        self.assertEqual(pg.inner_text("#quota-count"), "NYSE: 3 of 3 used today")
+        self.assertTrue(pg.is_disabled("#start-button"))
+        self.assertIn("daily limit reached", pg.inner_text("#start-note"))
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_api_load_limit.png"),
+                          full_page=True)
+        # another market has its own limit
+        pg.select_option("#market", "")
+        pg.fill("#market_other", "lse")
+        self.assertFalse(pg.is_visible("#quota-block"))
+        self.assertFalse(pg.is_disabled("#start-button"))
+        self.assertEqual(pg.inner_text("#quota-count"), "LSE: 0 of 3 used today")
+        pg.select_option("#market", "NYSE")
+        self.assertTrue(pg.is_disabled("#start-button"))
+        # the page bypassed (button enabled, form posted directly): the server refuses as well
+        with pg.expect_navigation():
+            pg.evaluate("() => { const b = document.getElementById('start-button'); b.disabled = false;"
+                        " document.querySelector('details.details').open = true;"
+                        " document.querySelector('input[name=fake]').checked = true;"
+                        " document.getElementById('load-form').submit(); }")
+        pg.wait_for_load_state()
+        self.assertTrue(any("Not started - NYSE: the bulk load of all stocks of a market may run at most 3 times a day"
+                            in m for m in self.flashes()), self.flashes())
+        self.assertTrue(pg.is_visible("#quota-block"))                     # the form came back in market mode
+        self.assertEqual(len(MarketFetcher(self.state.settings, fake=False).runs("NYSE")), 3)
+
+    def test_stock_and_text_file_limits_in_the_browser(self):
+        """A stock at its daily limit: a warning (it is skipped), an error when every typed stock is; a text
+        file with more than 100 symbols or after the 5th text-file load of the day: blocked."""
+        import json as _json
+        from stock_dataload.db import StageDatabase as _Db
+        from stock_dataload.eod_market import MarketFetcher
+        from stock_dataload.eod_symbols import SymbolListLoader
+        from stock_dataload.load_limits import StockLoadLedger
+        SymbolListLoader(self.state.settings).load_text("NYSE", _json.dumps([
+            {"Code": c, "Name": c, "Country": "USA", "Exchange": "NYSE", "Currency": "USD", "Type": "Common Stock",
+             "Isin": None} for c in ("HD", "JNJ", "MRK", "PFE")]), "json", source_file="test-list.json")
+        db = _Db(self.state.settings)
+        with db.connection() as conn:
+            for i in range(5):
+                StockLoadLedger(db).record(conn, "HD", f"dummy-{i}", "test/seed", 1, "2000-01-01 00:00:00")
+        from datetime import datetime as _dt
+        with db.connection() as conn:                                          # today, not 2000
+            conn.execute('UPDATE "Eod_Stock_Load" SET "LoadedAt" = ?', (_dt.now().replace(microsecond=0).isoformat(sep=" "),))
+        pg = self.page
+        pg.goto(self.base + "/api-load")
+        self.assertIn("Stocks at their daily limit (5 loads):", pg.inner_text(".monitor-strip"))
+        pg.fill("#symbols", "hd, PFE")
+        self.assertTrue(pg.is_visible("#stock-notice"))
+        self.assertIn("1 stock(s) will be skipped (not called): HD", pg.inner_text("#stock-notice"))
+        self.assertEqual(pg.get_attribute("#stock-notice", "class"), "flash warning")
+        self.assertFalse(pg.is_disabled("#start-button"))                     # a warning does not block
+        pg.fill("#symbols", "HD")
+        self.assertEqual(pg.get_attribute("#stock-notice", "class"), "flash error")
+        self.assertIn("Nothing to load. HD was already loaded 5 times today", pg.inner_text("#stock-notice"))
+        self.assertTrue(pg.is_disabled("#start-button"))
+        # a text file with 101 symbols - counted in the browser before anything is sent
+        pg.click(".mode-tabs >> text=From a text file")
+        self.assertFalse(pg.is_visible("#stock-notice"))
+        big = self.root / "big list.txt"
+        big.write_text(", ".join(f"S{i:03d}" for i in range(101)), encoding="utf-8")
+        pg.set_input_files("#file", str(big))
+        pg.wait_for_selector("#file-block:not([hidden])")
+        self.assertIn("Too many stock symbols. big list.txt lists 101 stock symbols - a text file may list at most 100",
+                      pg.inner_text("#file-block"))
+        self.assertIn("= 101 stock symbol(s) in big list.txt", pg.inner_text("#file-count"))
+        self.assertTrue(pg.is_disabled("#start-button"))
+        small = self.root / "small.txt"
+        small.write_text("HD, PFE", encoding="utf-8")
+        pg.set_input_files("#file", str(small))
+        pg.wait_for_selector("#file-count:has-text('= 2 stock symbol(s) in small.txt')")    # read in the browser
+        self.assertFalse(pg.is_visible("#file-block"))
+        self.assertIn("will be skipped (not called): HD", pg.inner_text("#stock-notice"))
+        self.assertFalse(pg.is_disabled("#start-button"))
+        # after the 5th text-file load of the day the tab is blocked
+        for _ in range(5):
+            MarketFetcher(self.state.settings, fake=True, sleep=lambda s: None).fetch_market(
+                "NYSE", symbols=["JNJ"], source="file", allow_fake_data=True)
+        pg.goto(self.base + "/api-load")
+        self.assertIn("5/5", pg.inner_text("#file-quota-strip"))
+        pg.click(".mode-tabs >> text=From a text file")
+        self.assertTrue(pg.is_visible("#file-block"))
+        self.assertIn("loading from a text file may run at most 5 times a day", pg.inner_text("#file-block"))
+        self.assertTrue(pg.is_disabled("#start-button"))
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_api_load_file_limit.png"),
+                          full_page=True)
+        pg.click(".mode-tabs >> text=Selected stocks")
+        pg.fill("#symbols", "PFE")
+        self.assertFalse(pg.is_disabled("#start-button"))
+
+    def test_one_day_of_all_stocks_in_the_browser(self):
+        """The bulk tab: its own fields, a weekend is blocked unless forced, the daily limit of whole-market
+        loads (a bulk load is one) blocks the exchange, a start runs and is listed as 'one day (bulk)'."""
+        from datetime import date as _date
+        if _date.today() < _date(2026, 10, 13):
+            self.skipTest("the stub's sample days lie in the future on this machine")
+        from stock_dataload.eod_bulk import BulkDayLoader
+        self.state.settings.eod_api_retry_backoff = 0.0
+        pg = self.page
+        pg.goto(self.base + "/api-load")
+        pg.click(".mode-tabs >> text=One day, all stocks")
+        self.assertTrue(pg.is_visible("#bulk_market"))
+        self.assertFalse(pg.is_visible("#market"))                         # the market list is for the other tabs
+        self.assertEqual(pg.input_value("#bulk_market"), "US")
+        pg.fill("#bulk_date", "2026-10-11")
+        self.assertTrue(pg.is_visible("#bulk-notice"))
+        self.assertIn("US does not trade on 2026-10-11 (a Sunday)", pg.inner_text("#bulk-notice"))
+        self.assertTrue(pg.is_disabled("#start-button"))
+        pg.check("#bulk_force")
+        self.assertFalse(pg.is_visible("#bulk-notice"))
+        self.assertFalse(pg.is_disabled("#start-button"))
+        pg.uncheck("#bulk_force")
+        pg.fill("#bulk_date", "2026-10-12")
+        self.assertFalse(pg.is_disabled("#start-button"))
+        pg.fill("#bulk_symbols", "MRK, HD")
+        pg.click("details.details summary")
+        pg.check("input[name=fake]")
+        pg.uncheck("input[name=promote]")
+        pg.click("#start-button")
+        pg.wait_for_load_state()
+        self.assertIn("Started: US 2026-10-12: 2 stock(s) (bulk)", self.flashes()[0])
+        pg.wait_for_selector("#job-status:text('finished')", timeout=60000)
+        self.assertIn("2 stock(s) loaded into Stock_EOD_Stage", pg.inner_text("#job-log"))
+        pg.wait_for_selector("#runs-table td:text('one day (bulk)')", timeout=30000)
+        for day in ("2026-10-13", "2026-10-14", "2026-10-15"):              # three whole-market loads of US today
+            BulkDayLoader(self.state.settings, fake=True).fetch("US", date=day, allow_fake_data=True)
+        pg.goto(self.base + "/api-load")
+        pg.click(".mode-tabs >> text=One day, all stocks")
+        self.assertTrue(pg.is_visible("#quota-block"))
+        self.assertIn("US: the bulk load of all stocks of a market may run at most 3 times a day", pg.inner_text("#quota-block"))
+        self.assertTrue(pg.is_disabled("#start-button"))
+        pg.fill("#bulk_symbols", "PFE")                                      # a few stocks are no whole-market load
+        self.assertFalse(pg.is_visible("#quota-block"))
+        self.assertFalse(pg.is_disabled("#start-button"))
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):
+            pg.fill("#bulk_symbols", "")
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_api_load_bulk.png"),
+                          full_page=True)
+
+    def test_daily_schedule_and_call_limit_in_the_browser(self):
+        """The daily schedule card: save, edit, run now (it shows under Current load); the bulk tab blocks a 4th
+        call for the same exchange and trading day."""
+        from datetime import date as _date
+        if _date.today() < _date(2026, 10, 13):
+            self.skipTest("the stub's sample days lie in the future on this machine")
+        from stock_dataload.eod_bulk import BulkDayLoader
+        pg = self.page
+        pg.goto(self.base + "/api-load")
+        self.assertIn("No daily schedule yet.", pg.inner_text("#schedules"))
+        pg.fill("#sc_market", "us")
+        pg.fill("#sc_time", "18:30")
+        pg.fill("#sc_symbols", "MRK, HD")
+        pg.check("#schedule-form input[name=fake]")
+        pg.uncheck("#schedule-form input[name=promote]")
+        pg.click("#schedule-save")
+        pg.wait_for_load_state()
+        self.assertTrue(any("Schedule saved: US every trading day at 18:30" in m for m in self.flashes()), self.flashes())
+        row = pg.locator("#schedule-table tr", has_text="18:30")
+        self.assertIn("US", row.inner_text())
+        self.assertIn("only MRK, HD", row.inner_text())
+        row.locator("text=Edit").click()
+        pg.wait_for_load_state()
+        self.assertIn("Change the schedule of US", pg.inner_text("#schedule-form"))
+        self.assertEqual(pg.input_value("#sc_time"), "18:30")
+        pg.locator("#schedule-table tr", has_text="18:30").locator("button:text('Run now')").click()
+        pg.wait_for_load_state()
+        pg.wait_for_selector("#job-status:text('finished')", timeout=60000)
+        self.assertIn("(bulk, run now)", pg.inner_text("#job-title"))
+        # three calls for US 2026-10-12 - the bulk tab blocks a fourth
+        for _ in range(3):
+            BulkDayLoader(self.state.settings, fake=True).fetch("US", date="2026-10-12", symbols="PFE",
+                                                                allow_fake_data=True)
+        pg.goto(self.base + "/api-load")
+        pg.click(".mode-tabs >> text=One day, all stocks")
+        pg.fill("#bulk_date", "2026-10-12")
+        pg.wait_for_selector("#bulk-call-block:not([hidden])")
+        self.assertIn("US 2026-10-12: the bulk endpoint may be called at most 3 times", pg.inner_text("#bulk-call-block"))
+        self.assertIn("US 2026-10-12: 3 of 3 used", pg.inner_text("#bulk-quota-count"))
+        self.assertTrue(pg.is_disabled("#start-button"))
+        pg.fill("#bulk_date", "2026-10-13")
+        pg.wait_for_selector("#bulk-call-block", state="hidden")
+        self.assertFalse(pg.is_disabled("#start-button"))
+        if os.environ.get("STOCK_DATALOAD_SCREENSHOTS"):
+            pg.screenshot(path=str(Path(__file__).resolve().parent.parent / "docs" / "dashboard_api_load_schedule.png"),
+                          full_page=True)
+
 
 if __name__ == "__main__":
     unittest.main()

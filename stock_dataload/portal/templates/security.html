@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Security{% endblock %}
+{% block content %}
+<h1>Security &amp; two-factor authentication</h1>
+<p class="muted">{{ customer.email }} · {% if customer.is_email_verified %}<span class="badge ok">e-mail verified</span>{% else %}<span class="badge warn">e-mail not verified</span>{% endif %}
+  {% if customer.is_admin %}<span class="badge blue">administrator</span>{% if settings.admin_requires_2fa %} · a second factor is required for the admin pages{% endif %}{% endif %}
+  · <a href="{{ url_for('account') }}">back to the account</a></p>
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+{% if recovery_codes %}
+<div class="card" style="border-color:#86efac;background:#f0fdf4">
+  <h3 style="margin-top:0">Your recovery codes</h3>
+  <p>Each code signs you in <b>once</b> if you cannot use your other second factors. Store them somewhere safe - <b>they are shown only now</b>.</p>
+  <div class="keybox" id="recovery-codes" style="font-size:15px;line-height:1.8">{% for c in recovery_codes %}{{ c }}{% if not loop.last %} &nbsp; {% endif %}{% if loop.index % 5 == 0 and not loop.last %}<br>{% endif %}{% endfor %}</div>
+</div>
+{% endif %}
+
+{% if totp_setup %}
+<div class="card" style="border-color:#bfdbfe;background:#eff6ff">
+  <h3 style="margin-top:0">Set up your authenticator app</h3>
+  <div class="grid2">
+    <div>
+      <ol style="margin:0 0 0 18px;padding:0">
+        <li>Install an authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password, ...).</li>
+        <li>{% if totp_setup.qr %}Scan the QR code or{% else %}Add an account manually and{% endif %} enter this key:</li>
+      </ol>
+      <div class="keybox" style="margin:10px 0;font-size:15px">{{ totp_setup.secret }}</div>
+      {% if totp_setup.uri %}<p class="muted" style="font-size:12px">Account name: <b>{{ settings.issuer }}</b> ({{ customer.email }}), time based, 6 digits. On a phone you can also <a href="{{ totp_setup.uri }}">open this link</a> directly in the app.</p>{% endif %}
+      <form method="post" action="{{ url_for('security_totp_confirm') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <div class="form-grid" style="grid-template-columns:140px 1fr">
+          <label for="code">Code from the app</label><input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus class="mono" style="font-size:20px;letter-spacing:.2em;max-width:200px">
+        </div>
+        <div class="actions"><button type="submit">Activate</button><a class="btn secondary" href="{{ url_for('security') }}">Cancel</a></div>
+      </form>
+    </div>
+    <div style="text-align:center">{% if totp_setup.qr %}{{ totp_setup.qr|safe }}{% else %}<p class="muted" style="font-size:12px">(install the optional <code>qrcode</code> package to show a QR code here)</p>{% endif %}</div>
+  </div>
+</div>
+{% endif %}
+
+{% if confirm_method %}
+<div class="card" style="border-color:#bfdbfe;background:#eff6ff">
+  <h3 style="margin-top:0">Enter the code we sent</h3>
+  {% if (confirm_method == 'email' and mail_stub) or (confirm_method == 'sms' and sms_stub) %}<div class="notice" style="margin-bottom:10px">Messages are in <b>stub mode</b> - the code was printed to the server console.</div>{% endif %}
+  <form method="post" action="{{ url_for('security_code_confirm', method=confirm_method) }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <div class="form-grid" style="grid-template-columns:140px 1fr">
+      <label for="code">Code</label><input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus class="mono" style="font-size:20px;letter-spacing:.2em;max-width:200px">
+    </div>
+    <div class="actions"><button type="submit">Activate</button><a class="btn secondary" href="{{ url_for('security') }}">Cancel</a></div>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h3 style="margin-top:0">Second factors</h3>
+  <p class="muted" style="font-size:13px">With a second factor, signing in needs your password <b>and</b> a code. You can enable several; any one of them signs you in.</p>
+  <table>
+    <tr><th>Method</th><th>Status</th><th>Details</th><th>Last used</th><th></th></tr>
+    {% for method in ('totp', 'email', 'sms') %}
+    {% set m = methods|selectattr('method', 'equalto', method)|selectattr('is_enabled')|first %}
+    <tr>
+      <td><b>{{ method_labels[method] }}</b><div class="muted" style="font-size:12px;white-space:normal">{% if method == 'totp' %}codes from an app on your phone - works offline{% elif method == 'email' %}a code sent to {{ customer.email }}{% else %}a code sent to your phone number{% endif %}</div></td>
+      <td>{% if m %}<span class="badge ok">enabled</span>{% else %}<span class="badge">off</span>{% endif %}</td>
+      <td class="mono">{{ m.masked_destination if m else '' }}</td>
+      <td class="muted">{{ (m.last_used_at or '-')[:16] if m else '' }}</td>
+      <td style="white-space:nowrap">
+        {% if m %}
+        <form method="post" action="{{ url_for('security_disable', method=method) }}" class="inline" style="display:flex;gap:4px" onsubmit="return confirm('Remove {{ method_labels[method] }}?')">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="password" name="password" placeholder="your password" autocomplete="current-password" required style="width:150px;padding:4px 6px;font-size:12px">
+          <button class="small danger" type="submit">Remove</button></form>
+        {% elif method == 'sms' %}
+        <form method="post" action="{{ url_for('security_code_begin', method='sms') }}" class="inline" style="display:flex;gap:4px">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="text" name="phone" placeholder="+1 555 010 1234" value="{{ customer.phone or '' }}" autocomplete="tel" required style="width:170px;padding:4px 6px;font-size:12px">
+          <button class="small secondary" type="submit">Send code</button></form>
+        {% else %}
+        <form method="post" action="{{ url_for('security_totp_begin') if method == 'totp' else url_for('security_code_begin', method='email') }}" class="inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <button class="small secondary" type="submit">{{ 'Set up' if method == 'totp' else 'Send code' }}</button></form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="grid2">
+<div class="card">
+  <h3 style="margin-top:0">Recovery codes</h3>
+  <p class="muted" style="font-size:13px">{{ recovery_left }} unused code{{ 's' if recovery_left != 1 }}. Generating new ones invalidates the old ones. You get a first set automatically when you enable your first second factor.</p>
+  <form method="post" action="{{ url_for('security_recovery') }}" style="display:flex;gap:6px;align-items:center">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="password" name="password" placeholder="your password" autocomplete="current-password" required style="width:180px">
+    <button class="secondary" type="submit">Generate new codes</button>
+  </form>
+</div>
+<div class="card">
+  <h3 style="margin-top:0">Password</h3>
+  {% if customer.has_password %}
+  <p class="muted" style="font-size:13px">Change it on the <a href="{{ url_for('account') }}#password">account page</a>. Forgot it? Sign out and use <a href="{{ url_for('forgot_password') }}">Forgot your password</a> - a reset link is sent to your e-mail address.</p>
+  {% else %}
+  <p class="muted" style="font-size:13px">This account has <b>no password</b> - you sign in with a connected account. To add a password, sign out and use <a href="{{ url_for('forgot_password') }}">Forgot your password</a>: the link sent to {{ customer.email }} lets you set one.</p>
+  {% endif %}
+</div>
+</div>
+
+{% if oauth_providers %}
+<div class="card">
+  <h3 style="margin-top:0">Connected accounts</h3>
+  <p class="muted" style="font-size:13px">Sign in with one click through a connected account. Your second factor still applies.</p>
+  <table>
+    <tr><th>Provider</th><th>Status</th><th>Account</th><th>Last sign-in</th><th></th></tr>
+    {% for name, p in oauth_providers.items() %}
+    {% set i = identities|selectattr('provider', 'equalto', name)|first %}
+    <tr>
+      <td><b>{{ p.label }}</b></td>
+      <td>{% if i %}<span class="badge ok">connected</span>{% else %}<span class="badge">not connected</span>{% endif %}</td>
+      <td class="mono">{{ i.email or i.subject if i else '' }}</td>
+      <td class="muted">{{ (i.last_used_at if false else (i.last_login_at or '-'))[:16] if i else '' }}</td>
+      <td>{% if i %}<form method="post" action="{{ url_for('oauth_unlink', provider=name) }}" class="inline" onsubmit="return confirm('Disconnect {{ p.label }}?')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="small danger" type="submit">Disconnect</button></form>
+        {% else %}<a class="btn small secondary" href="{{ url_for('oauth_start', provider=name, link=1) }}">Connect</a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endblock %}

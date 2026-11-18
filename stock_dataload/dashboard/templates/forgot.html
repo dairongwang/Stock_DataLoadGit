@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Forgot your password{% endblock %}
+{% block content %}
+<div class="card login-card">
+  <h1>Forgot your password?</h1>
+  {% if sent %}
+    <div class="flash success">If <b>{{ value }}</b> is an active account with an e-mail address, a link to choose a new password is on its way (valid {{ settings.reset_ttl_minutes }} minutes).</div>
+    {% if mail_stub %}<div class="flash info">Mail is in <b>stub mode</b> - the link was printed to the server console, no e-mail was sent.</div>{% endif %}
+    <p class="muted" style="font-size:12px">No e-mail address on your account? Ask an administrator to reset your password on the Users page.</p>
+  {% else %}
+    <p class="muted">Enter your user name or e-mail address.</p>
+    <form method="post" action="{{ url_for('forgot_password') }}">
+      <div class="form-grid" style="grid-template-columns:120px 1fr">
+        <label for="user">User / e-mail</label><input type="text" id="user" name="user" value="{{ value }}" required autofocus autocomplete="username">
+      </div>
+      <div class="actions"><button type="submit">Send reset link</button><a class="btn secondary" href="{{ url_for('login') }}">Back</a></div>
+    </form>
+  {% endif %}
+</div>
+{% endblock %}

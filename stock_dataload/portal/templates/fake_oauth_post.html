@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Returning to Stock Data API…</title></head>
+<body onload="document.forms[0].submit()">
+<p>Returning to Stock Data API (Apple answers with a form post)…</p>
+<form method="post" action="{{ redirect_uri }}">
+  <input type="hidden" name="code" value="{{ code }}"><input type="hidden" name="state" value="{{ state }}">
+  <input type="hidden" name="user" value='{{ user|tojson }}'>
+  <noscript><button type="submit">Continue</button></noscript>
+</form>
+</body></html>

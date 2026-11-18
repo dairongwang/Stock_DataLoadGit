@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Confirm your e-mail address{% endblock %}
+{% block content %}
+<div class="card" style="max-width:480px;margin:30px auto">
+  <h1>Confirm your e-mail address</h1>
+  <p class="muted">We sent a 6-digit code to <b>{{ masked }}</b>. Enter it to activate the account of {{ customer.email }}.</p>
+  {% if mail_stub %}<div class="notice" style="margin-bottom:12px">Mail is in <b>stub mode</b> - the code was printed to the server console, no e-mail was sent.</div>{% endif %}
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('verify_email') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <div class="form-grid" style="grid-template-columns:120px 1fr">
+      <label for="code">Code</label><input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="8" required autofocus class="mono" style="font-size:20px;letter-spacing:.2em;max-width:200px">
+    </div>
+    <div class="actions"><button type="submit">Confirm</button>
+      <button type="submit" name="action" value="resend" class="secondary" formnovalidate>Send a new code</button></div>
+  </form>
+</div>
+{% endblock %}

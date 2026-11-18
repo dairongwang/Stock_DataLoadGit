@@ -44,6 +44,24 @@ marked ``Complete = 0`` with ``MissingDays`` / ``MissingDates``, and recorded
 in ``Data_Error`` (``incomplete_week`` / ``incomplete_month``); the finding is
 resolved automatically once the gap is filled and the period promoted again.
 
+``promote_eod_daily`` moves the EOD API data (``Stock_EOD_Stage``, see
+:mod:`eod_stage`) into the same daily table, converting the prices to the
+adjusted basis of ``AdjustedClose``::
+
+    rate   = AdjustedClose / Close                    (per symbol and trade day)
+    Open   = Open * rate      High = High * rate      Low = Low * rate
+    Close  = AdjustedClose    Volume = Volume          (rounded to EOD_PRICE_DECIMALS)
+
+Symbol, trade date and market are matched: the EOD ``Ticker`` (the symbol
+without its exchange suffix) and ``TradeDate`` are the key of the daily row;
+the market comes from the run's ``market`` parameter, else the symbol table
+(``Stock_Symbol``, the ticker registered in exactly one market), else the
+market the ticker already has in the daily table, else ``[eod_api]
+default_market`` - a row without a market is rejected (``market_unknown``),
+and a daily row of the same ticker and day under a *different* market is
+never overwritten (``market_mismatch``).  The daily validation rules apply to
+the converted values.
+
 Rows that pass are promoted; when the same stock/day is staged more than
 once (two files, a manual row) the most recently loaded row wins.  Promoting
 again is safe: existing active rows are updated only when something changed
@@ -79,7 +97,8 @@ PROMOTION_HISTORY_TABLE = "Promotion_History"
 PROC_DAILY = "promote_daily"
 PROC_WEEKLY = "promote_weekly"
 PROC_MONTHLY = "promote_monthly"
-PROCEDURES = (PROC_DAILY, PROC_WEEKLY, PROC_MONTHLY)
+PROC_EOD_DAILY = "promote_eod_daily"
+PROCEDURES = (PROC_DAILY, PROC_WEEKLY, PROC_MONTHLY, PROC_EOD_DAILY)
 
 MODE_FULL = "full"
 MODE_INCREMENTAL = "incremental"
@@ -100,6 +119,26 @@ RULE_BEFORE_FIRST = "before_first_trade_date"
 RULE_AFTER_LAST = "after_last_trade_date"
 RULE_INCOMPLETE_WEEK = "incomplete_week"
 RULE_INCOMPLETE_MONTH = "incomplete_month"
+#: promote_eod_daily only
+RULE_MARKET_UNKNOWN = "market_unknown"
+RULE_MARKET_MISMATCH = "market_mismatch"
+
+#: converted EOD prices are rounded to this many decimals (removes floating-point noise such as
+#: 95.08 * rate = 92.36610000000001 so that High >= Close holds exactly when it held in the source)
+EOD_PRICE_DECIMALS = 6
+#: the SQL function the EOD procedure rounds with.  SQLite's own round() - and its text -> REAL
+#: conversion - can be one unit in the last place off (119.92470900000001 instead of 119.924709),
+#: so PromotionService registers this correctly rounding application function on the connection
+EOD_ROUND_FUNCTION = "eod_round"
+
+
+def eod_round(value, decimals):
+    """``eod_round(x, n)`` in SQL: *x* rounded to *n* decimals (the double nearest to the decimal result)."""
+    return None if value is None else round(float(value), int(decimals))
+
+
+def _round_price(expr: str, decimals: int = EOD_PRICE_DECIMALS) -> str:
+    return f"{EOD_ROUND_FUNCTION}({expr}, {decimals})"
 
 #: names of the temporary tables the procedures work with
 _T_CANDIDATES = '"_promote_candidates"'
@@ -110,6 +149,7 @@ _T_GAPS = '"_promote_gaps"'
 _T_ROWS = '"_promote_rows"'
 _T_PERIODS = '"_promote_periods"'
 _T_AGG = '"_promote_agg"'
+_T_EOD = '"_promote_eod"'
 
 _ISO_DATE_GLOB = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
 _YMD_GLOB = "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
@@ -873,6 +913,296 @@ def monthly_procedure(settings: Settings, filters: Mapping[str, Any] | None = No
     return _period_procedure(settings, "monthly", filters, since, full, now)
 
 
+def eod_daily_procedure(settings: Settings, filters: Mapping[str, Any] | None = None, since: str | None = None,
+                        now: str = ":now") -> list[_Statement]:
+    """The ``promote_eod_daily`` procedure: ``Stock_EOD_Stage`` -> daily table with the
+    adjusted-price conversion (statements in execution order).
+
+    *filters*: ``symbol``, ``symbols`` (a list - e.g. the stocks of an ``eod-fetch-market`` run),
+    ``ticker``, ``load_id``, ``date_from``, ``date_to`` (YYYY-MM-DD) and
+    ``market`` (the market of every selected row - overrides the lookup).  *since*:
+    incremental mode - rows changed since this timestamp plus rows that have no daily row yet.
+    """
+    from .eod_stage import DEFAULT_EOD_STAGE_TABLE
+    eod = _q(getattr(settings, "eod_stage_table", DEFAULT_EOD_STAGE_TABLE) or DEFAULT_EOD_STAGE_TABLE)
+    daily = _q(settings.daily_table)
+    nd = EOD_PRICE_DECIMALS
+    f = filters or {}
+    where, params = [], {}
+    for key, column in (("symbol", "Symbol"), ("ticker", "Ticker"), ("load_id", "LoadId")):
+        if f.get(key):
+            where.append(f'e."{column}" = :{key}')
+            params[key] = f[key]
+    if f.get("symbols"):
+        # any number of symbols as one JSON array parameter (no limit on SQL variables)
+        where.append('e."Symbol" IN (SELECT "value" FROM json_each(:symbols))')
+        params["symbols"] = json.dumps(sorted({str(x).strip().upper() for x in f["symbols"]}))
+    if f.get("date_from"):
+        where.append('e."TradeDate" >= :date_from')
+        params["date_from"] = f["date_from"]
+    if f.get("date_to"):
+        where.append('e."TradeDate" <= :date_to')
+        params["date_to"] = f["date_to"]
+    if since:
+        # incremental: rows changed since the last run, and rows still missing in the daily
+        # table (e.g. rejected earlier because the market was unknown - retried every run)
+        where.append(f'(e."UpdatedAt" >= :since OR NOT EXISTS (SELECT 1 FROM {daily} d '
+                     f'WHERE d."Ticker" = e."Ticker" AND d."TradeDate" = e."TradeDate"))')
+        params["since"] = since
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    market = (f.get("market") or "").strip().upper() or None
+    default_market = (getattr(settings, "eod_default_market", "") or "").strip().upper() or None
+
+    steps = [
+        _Statement(f"DROP TABLE IF EXISTS {_T_EOD}", "the temporary tables live in this connection only"),
+        _Statement(f"DROP TABLE IF EXISTS {_T_CLOSED}"),
+        _Statement(f"DROP TABLE IF EXISTS {_T_SYMBOLS}"),
+        _Statement(f"DROP TABLE IF EXISTS {_T_ROWS}"),
+        _Statement(f"""
+CREATE TEMP TABLE {_T_EOD} (
+    "EodStageId"    INTEGER,
+    "Symbol"        TEXT,
+    "Ticker"        TEXT,
+    "TradeDate"     TEXT,
+    "EodOpen"       REAL,
+    "EodHigh"       REAL,
+    "EodLow"        REAL,
+    "EodClose"      REAL,
+    "AdjustedClose" REAL,
+    "Volume"        INTEGER,
+    "Rate"          REAL,
+    "Open"          REAL,
+    "High"          REAL,
+    "Low"           REAL,
+    "Close"         REAL,
+    "Market"        TEXT,
+    "MarketSource"  TEXT,
+    "MarketNote"    TEXT,
+    "SourceFile"    TEXT,
+    "LoadId"        TEXT,
+    "UpdatedAt"     TEXT,
+    "Reason"        TEXT,
+    "Rule"          TEXT,
+    "ColumnName"    TEXT,
+    "Value"         TEXT,
+    "Message"       TEXT
+)""", "step 1: the EOD rows to promote"),
+        _Statement(f"""
+INSERT INTO {_T_EOD} ("EodStageId", "Symbol", "Ticker", "TradeDate", "EodOpen", "EodHigh", "EodLow", "EodClose",
+                      "AdjustedClose", "Volume", "SourceFile", "LoadId", "UpdatedAt")
+SELECT e."EodStageId", e."Symbol", e."Ticker", e."TradeDate", e."Open", e."High", e."Low", e."Close",
+       e."AdjustedClose", e."Volume", e."SourceFile", e."LoadId", e."UpdatedAt"
+  FROM {eod} e{where_sql}""", params=params, counts="rows_read"),
+        _Statement(f'CREATE INDEX "_ix_promote_eod" ON {_T_EOD} ("Ticker", "TradeDate", "EodStageId")'),
+    ]
+
+    # -- step 2: the market of every row ---------------------------------------
+    if market:
+        steps.append(_Statement(f"""UPDATE {_T_EOD} SET "Market" = :market, "MarketSource" = 'parameter'""",
+                                "step 2: the market - given for this run (it overrides the look-up)",
+                                params={"market": market}))
+    else:
+        steps.append(_Statement(f"""
+UPDATE {_T_EOD}
+   SET "Market" = (SELECT MIN(s."Market") FROM "{STOCK_SYMBOL_TABLE}" s
+                    WHERE s."Ticker" = {_T_EOD}."Ticker" AND s."Market" <> ''),
+       "MarketSource" = 'Stock_Symbol'
+ WHERE (SELECT COUNT(DISTINCT s."Market") FROM "{STOCK_SYMBOL_TABLE}" s
+         WHERE s."Ticker" = {_T_EOD}."Ticker" AND s."Market" <> '') = 1""",
+                                "step 2a: the market - the symbol table, if the ticker is registered in exactly "
+                                "one market"))
+        steps.append(_Statement(f"""
+UPDATE {_T_EOD}
+   SET "Market" = (SELECT MIN(d."Market") FROM {daily} d WHERE d."Ticker" = {_T_EOD}."Ticker" AND d."Market" IS NOT NULL),
+       "MarketSource" = '{settings.daily_table}'
+ WHERE "Market" IS NULL
+   AND (SELECT COUNT(DISTINCT d."Market") FROM {daily} d
+         WHERE d."Ticker" = {_T_EOD}."Ticker" AND d."Market" IS NOT NULL) = 1""",
+                                "step 2b: ... else the market the ticker already has in the daily table"))
+        if default_market:
+            steps.append(_Statement(f"""UPDATE {_T_EOD} SET "Market" = :default_market, "MarketSource" = 'default'
+ WHERE "Market" IS NULL
+   AND NOT EXISTS (SELECT 1 FROM "{STOCK_SYMBOL_TABLE}" s WHERE s."Ticker" = {_T_EOD}."Ticker" AND s."Market" <> '')""",
+                                    "step 2c: ... else [eod_api] default_market - for tickers the symbol table does "
+                                    "not know (a ticker registered in several markets stays ambiguous)",
+                                    params={"default_market": default_market}))
+        steps.append(_Statement(f"""
+UPDATE {_T_EOD}
+   SET "MarketNote" = (SELECT group_concat("Market", ', ') FROM (SELECT DISTINCT s."Market" FROM "{STOCK_SYMBOL_TABLE}" s
+                        WHERE s."Ticker" = {_T_EOD}."Ticker" AND s."Market" <> '' ORDER BY 1))
+ WHERE "Market" IS NULL""", "markets of an ambiguous ticker (for the message of the rejected rows)"))
+
+    steps += [
+        _Statement(f'CREATE TEMP TABLE {_T_CLOSED} ("Market" TEXT NOT NULL, "TradeDate" TEXT NOT NULL, '
+                   f'"Reason" TEXT NOT NULL, PRIMARY KEY ("Market", "TradeDate"))',
+                   "step 3: days the markets were closed - filled by the application from the No_Trading_Day table"
+                   if settings.reject_market_closed_days else
+                   "step 3: market-closed days are not checked ([promotion] reject_market_closed_days = false)",
+                   hook="eod_closed_days"),
+        _Statement(f"""
+CREATE TEMP TABLE {_T_SYMBOLS} AS
+SELECT "Market", "Ticker", "FirstTradeDate", "LastTradeDate"
+  FROM "{STOCK_SYMBOL_TABLE}"
+ WHERE "FirstTradeDate" IS NOT NULL OR "LastTradeDate" IS NOT NULL""",
+                   "step 3b: the trading window of every stock with known dates (Stock_Symbol table)"),
+        _Statement(f'CREATE INDEX "_ix_promote_symbols" ON {_T_SYMBOLS} ("Market", "Ticker")'),
+        # -- step 4: the conversion -----------------------------------------------------
+        _Statement(f"""
+UPDATE {_T_EOD}
+   SET "Rate"  = "AdjustedClose" / "EodClose",
+       "Open"  = {_round_price('"EodOpen" * ("AdjustedClose" / "EodClose")')},
+       "High"  = {_round_price('"EodHigh" * ("AdjustedClose" / "EodClose")')},
+       "Low"   = {_round_price('"EodLow" * ("AdjustedClose" / "EodClose")')},
+       "Close" = {_round_price('"AdjustedClose"')}
+ WHERE "EodClose" > 0 AND "AdjustedClose" > 0""",
+                   f"step 4: the conversion - rate = AdjustedClose / Close; Open, High, Low = the EOD value * rate; "
+                   f"Close = AdjustedClose; Volume unchanged. Rounded to {nd} decimals (floating-point noise) with "
+                   f"{EOD_ROUND_FUNCTION}(x, n), a correctly rounding function the application registers on the "
+                   f"connection (SQLite's round() may be one unit in the last place off)."),
+    ]
+
+    # -- step 5: validation of the converted rows ---------------------------------
+    checks = [
+        f"WHEN \"EodClose\" <= 0 THEN '{RULE_POSITIVE}:Close'",
+        f"WHEN \"AdjustedClose\" <= 0 THEN '{RULE_POSITIVE}:AdjustedClose'",
+        f"WHEN \"Market\" IS NULL THEN '{RULE_MARKET_UNKNOWN}:Market'",
+    ]
+    for col in ("Open", "High", "Low"):
+        checks.append(f"WHEN {_q(col)} <= 0 THEN '{RULE_POSITIVE}:{col}'")
+    checks.append(f"WHEN \"High\" < \"Low\" THEN '{RULE_HIGH_LOW}:High'")
+    if settings.check_price_range:
+        checks.append(f"WHEN \"Open\" < \"Low\" OR \"Open\" > \"High\" THEN '{RULE_RANGE}:Open'")
+        checks.append(f"WHEN \"Close\" < \"Low\" OR \"Close\" > \"High\" THEN '{RULE_RANGE}:Close'")
+    if settings.reject_market_closed_days:
+        checks.append(f"WHEN EXISTS (SELECT 1 FROM {_T_CLOSED} x WHERE x.\"Market\" = {_T_EOD}.\"Market\" "
+                      f"AND x.\"TradeDate\" = {_T_EOD}.\"TradeDate\") THEN '{RULE_CLOSED}:TradeDate'")
+    if settings.check_trading_window:
+        symbol_match = f"s.\"Market\" = {_T_EOD}.\"Market\" AND s.\"Ticker\" = {_T_EOD}.\"Ticker\""
+        checks.append(f"WHEN EXISTS (SELECT 1 FROM {_T_SYMBOLS} s WHERE {symbol_match} "
+                      f"AND s.\"FirstTradeDate\" > {_T_EOD}.\"TradeDate\") THEN '{RULE_BEFORE_FIRST}:TradeDate'")
+        checks.append(f"WHEN EXISTS (SELECT 1 FROM {_T_SYMBOLS} s WHERE {symbol_match} "
+                      f"AND s.\"LastTradeDate\" < {_T_EOD}.\"TradeDate\") THEN '{RULE_AFTER_LAST}:TradeDate'")
+    checks.append(f"WHEN EXISTS (SELECT 1 FROM {daily} d WHERE d.\"Ticker\" = {_T_EOD}.\"Ticker\" "
+                  f"AND d.\"TradeDate\" = {_T_EOD}.\"TradeDate\" AND d.\"Market\" IS NOT {_T_EOD}.\"Market\") "
+                  f"THEN '{RULE_MARKET_MISMATCH}:Market'")
+    case = "\n        ".join(checks)
+    steps.append(_Statement(f"""
+UPDATE {_T_EOD} SET "Reason" = CASE
+        {case}
+    END""", "step 5: validation of the converted values - the first failing rule decides (rule:column)"))
+    price = lambda c: _fmt_number(f'"{c}"')  # noqa: E731
+    steps.append(_Statement(f"""
+UPDATE {_T_EOD}
+   SET "Rule" = substr("Reason", 1, instr("Reason", ':') - 1),
+       "ColumnName" = substr("Reason", instr("Reason", ':') + 1),
+       "Value" = CASE substr("Reason", instr("Reason", ':') + 1)
+                     WHEN 'Open' THEN {price('Open')}
+                     WHEN 'High' THEN {price('High')}
+                     WHEN 'Low' THEN {price('Low')}
+                     WHEN 'Close' THEN CASE WHEN "Rule" = '{RULE_POSITIVE}' THEN {price('EodClose')} ELSE {price('Close')} END
+                     WHEN 'AdjustedClose' THEN {price('AdjustedClose')}
+                     WHEN 'Market' THEN "Market"
+                     WHEN 'TradeDate' THEN "TradeDate"
+                 END
+ WHERE "Reason" IS NOT NULL""", "rule, column and offending value of the rejected rows", counts="rows_rejected"))
+    steps.append(_Statement(f"""
+UPDATE {_T_EOD} SET "Message" = CASE "Rule"
+        WHEN '{RULE_POSITIVE}' THEN CASE "ColumnName" WHEN 'Close' THEN 'close (' || {price('EodClose')} || ') must be greater than 0 - the rate AdjustedClose / Close cannot be computed'
+                                    WHEN 'AdjustedClose' THEN 'adjusted_close (' || {price('AdjustedClose')} || ') must be greater than 0'
+                                    ELSE 'converted ' || lower("ColumnName") || ' (' || "Value" || ') must be greater than 0' END
+        WHEN '{RULE_MARKET_UNKNOWN}' THEN CASE WHEN "MarketNote" IS NOT NULL
+                                    THEN "Ticker" || ' is registered in several markets (' || "MarketNote" || ') - promote with --market'
+                                    ELSE 'the market of ' || "Symbol" || ' is unknown - register it (symbols set ' || "Ticker"
+                                         || ' --market NYSE), promote with --market or set [eod_api] default_market' END
+        WHEN '{RULE_HIGH_LOW}' THEN 'converted high (' || "Value" || ') is smaller than low (' || {price('Low')} || ')'
+        WHEN '{RULE_RANGE}' THEN 'converted ' || lower("ColumnName") || ' (' || "Value" || ') is outside the low..high range ('
+                                 || {price('Low')} || '..' || {price('High')} || ')'
+        WHEN '{RULE_CLOSED}' THEN "Market" || ' was closed on ' || "TradeDate" || ' ('
+                                  || COALESCE((SELECT x."Reason" FROM {_T_CLOSED} x WHERE x."Market" = {_T_EOD}."Market"
+                                                 AND x."TradeDate" = {_T_EOD}."TradeDate"), 'no trading day') || ')'
+        WHEN '{RULE_BEFORE_FIRST}' THEN "Ticker" || ' started to trade on '
+                                  || (SELECT s."FirstTradeDate" FROM {_T_SYMBOLS} s WHERE s."Market" = {_T_EOD}."Market"
+                                       AND s."Ticker" = {_T_EOD}."Ticker") || ' - data for ' || "TradeDate" || ' is before its first trade date'
+        WHEN '{RULE_AFTER_LAST}' THEN "Ticker" || ' stopped trading on '
+                                  || (SELECT s."LastTradeDate" FROM {_T_SYMBOLS} s WHERE s."Market" = {_T_EOD}."Market"
+                                       AND s."Ticker" = {_T_EOD}."Ticker") || ' - data for ' || "TradeDate" || ' is after its last trade date'
+        WHEN '{RULE_MARKET_MISMATCH}' THEN '{settings.daily_table} already holds ' || "Ticker" || ' ' || "TradeDate" || ' in market '
+                                  || COALESCE((SELECT d."Market" FROM {daily} d WHERE d."Ticker" = {_T_EOD}."Ticker"
+                                                 AND d."TradeDate" = {_T_EOD}."TradeDate"), '(none)')
+                                  || ', not ' || "Market" || ' - it is not overwritten'
+    END
+ WHERE "Rule" IS NOT NULL""", "messages for the rejected rows"))
+    steps.append(_Statement(f'SELECT "Rule", COUNT(*) FROM {_T_EOD} WHERE "Rule" IS NOT NULL GROUP BY "Rule"',
+                            counts="reject_reasons"))
+    steps.append(_Statement(f"""
+INSERT INTO "{DATA_ERROR_TABLE}" ("DetectedAt", "SourceFile", "LoadId", "Market", "Ticker", "TradeDate",
+                                  "ColumnName", "Value", "Rule", "Severity", "Alert", "ErrorMessage", "LineNo")
+SELECT {now}, c."SourceFile", c."LoadId", c."Market", c."Ticker", c."TradeDate", c."ColumnName", c."Value",
+       c."Rule", 'error', 0, 'promotion of ' || c."Symbol" || ' to {settings.daily_table} rejected the row: ' || c."Message", NULL
+  FROM {_T_EOD} c
+ WHERE c."Rule" IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM "{DATA_ERROR_TABLE}" e
+                    WHERE e."Resolved" = 0 AND e."Rule" = c."Rule" AND e."SourceFile" IS c."SourceFile"
+                      AND e."Ticker" IS c."Ticker" AND e."TradeDate" IS c."TradeDate"
+                      AND e."ColumnName" IS c."ColumnName")""",
+                            "step 6: rejected rows -> Data_Error (once per open finding)", params={"now": None}))
+
+    # -- step 7: one row per stock/day (MRK and MRK.US are the same ticker) ------------
+    steps.append(_Statement(f"""
+CREATE TEMP TABLE {_T_ROWS} AS
+SELECT c."Market", c."Ticker", c."TradeDate", c."Open", c."High", c."Low", c."Close", c."Volume",
+       c."SourceFile", c."LoadId"
+  FROM {_T_EOD} c
+ WHERE c."Rule" IS NULL
+   AND NOT EXISTS (SELECT 1 FROM {_T_EOD} c2
+                    WHERE c2."Ticker" = c."Ticker" AND c2."TradeDate" = c."TradeDate" AND c2."Rule" IS NULL
+                      AND (c2."UpdatedAt" > c."UpdatedAt"
+                           OR (c2."UpdatedAt" = c."UpdatedAt" AND c2."EodStageId" > c."EodStageId")))
+ ORDER BY c."Ticker", c."TradeDate"
+""", "step 7: one row per stock/day - when several symbols of the same ticker (MRK, MRK.US) have the day, "
+     "the most recently updated EOD row wins"))
+    steps.append(_Statement(f"SELECT (SELECT COUNT(*) FROM {_T_EOD} WHERE \"Rule\" IS NULL) - "
+                            f"(SELECT COUNT(*) FROM {_T_ROWS})", counts="rows_skipped"))
+
+    # -- step 8: counts + upsert (StageId stays NULL: it points into the file staging table) ----
+    join = f'FROM {_T_ROWS} r JOIN {daily} d ON d."Ticker" = r."Ticker" AND d."TradeDate" = r."TradeDate"'
+    differs = ('(d."Open" IS NOT r."Open" OR d."High" IS NOT r."High" OR d."Low" IS NOT r."Low" '
+               'OR d."Close" IS NOT r."Close" OR d."Volume" IS NOT r."Volume" OR d."Market" IS NOT r."Market" '
+               'OR d."SourceFile" IS NOT r."SourceFile" OR d."LoadId" IS NOT r."LoadId" OR d."StageId" IS NOT NULL)')
+    steps.append(_Statement(f"SELECT COUNT(*) {join}", "step 8: how many rows already exist ...", counts="_matched"))
+    steps.append(_Statement(f"SELECT COUNT(*) {join} WHERE {differs}", "... and how many of them changed",
+                            counts="rows_updated"))
+    steps.append(_Statement(f"""
+INSERT INTO {daily} ("Market", "Ticker", "TradeDate", "Open", "High", "Low", "Close", "Volume",
+                     "SourceFile", "LoadId", "StageId", "PromotedAt", "UpdatedAt")
+SELECT r."Market", r."Ticker", r."TradeDate", r."Open", r."High", r."Low", r."Close", r."Volume",
+       r."SourceFile", r."LoadId", NULL, {now}, {now}
+  FROM {_T_ROWS} r
+ WHERE true
+ON CONFLICT ("Ticker", "TradeDate") DO UPDATE SET
+       "Market" = excluded."Market", "Open" = excluded."Open", "High" = excluded."High",
+       "Low" = excluded."Low", "Close" = excluded."Close", "Volume" = excluded."Volume",
+       "SourceFile" = excluded."SourceFile", "LoadId" = excluded."LoadId", "StageId" = NULL,
+       "UpdatedAt" = excluded."UpdatedAt"
+ WHERE {daily}."Open" IS NOT excluded."Open" OR {daily}."High" IS NOT excluded."High"
+    OR {daily}."Low" IS NOT excluded."Low" OR {daily}."Close" IS NOT excluded."Close"
+    OR {daily}."Volume" IS NOT excluded."Volume" OR {daily}."Market" IS NOT excluded."Market"
+    OR {daily}."SourceFile" IS NOT excluded."SourceFile" OR {daily}."LoadId" IS NOT excluded."LoadId"
+    OR {daily}."StageId" IS NOT NULL
+""", "upsert on (Ticker, TradeDate): new stock/days are inserted, existing ones (same market - step 5) updated only if "
+     "something changed; UpdatedAt drives the incremental weekly / monthly promotion", params={"now": None}))
+    steps.append(_Statement(f"""
+UPDATE "{DATA_ERROR_TABLE}"
+   SET "Resolved" = 1, "ResolvedAt" = {now}, "ResolutionNote" = 'promoted by {PROC_EOD_DAILY}'
+ WHERE "Resolved" = 0
+   AND "ErrorMessage" LIKE 'promotion of % to {settings.daily_table} rejected the row: %'
+   AND EXISTS (SELECT 1 FROM {_T_ROWS} r WHERE r."Ticker" = "{DATA_ERROR_TABLE}"."Ticker"
+                                          AND r."TradeDate" = "{DATA_ERROR_TABLE}"."TradeDate")""",
+                            "step 9: earlier findings of this procedure for the stock/days promoted now are resolved "
+                            "(e.g. market_unknown after the symbol was registered)", params={"now": None}))
+    return steps
+
+
 def render_procedure(name: str, settings: Settings | None = None) -> str:
     """The SQL of a procedure as a readable reference script (sql/promote_*_sqlite.sql)."""
     settings = settings or Settings()
@@ -887,6 +1217,14 @@ def render_procedure(name: str, settings: Settings | None = None) -> str:
         head = (f"-- {PROC_WEEKLY}: {settings.daily_table} -> {settings.weekly_table} (one row per stock and "
                 f"ISO week).\n-- Parameters: :now. Incremental mode adds \"UpdatedAt\" >= :since to step 1 "
                 f"and skips step 5.")
+    elif name == PROC_EOD_DAILY:
+        steps = eod_daily_procedure(settings, {}, since=None)
+        head = (f"-- {PROC_EOD_DAILY}: {settings.eod_stage_table} (EOD API data) -> {settings.daily_table} with the "
+                f"adjusted-price conversion\n-- rate = AdjustedClose / Close; Open / High / Low * rate; Close = "
+                f"AdjustedClose; Volume as is.\n-- Parameters: :now. A market parameter replaces step 2; "
+                f"[eod_api] default_market adds step 2c;\n-- incremental mode adds \"UpdatedAt\" >= :since OR no "
+                f"daily row yet; filters add WHERE conditions on Symbol / Ticker / LoadId / TradeDate.\n-- "
+                f"{EOD_ROUND_FUNCTION}(x, n) is an application function (correct rounding) registered on the connection.")
     elif name == PROC_MONTHLY:
         steps = monthly_procedure(settings, {}, since=None, full=True)
         head = (f"-- {PROC_MONTHLY}: {settings.daily_table} -> {settings.monthly_table} (one row per stock and "
@@ -1040,7 +1378,7 @@ class PromotionService:
 
     def _target_of(self, procedure: str) -> str:
         return {PROC_DAILY: self.settings.daily_table, PROC_WEEKLY: self.settings.weekly_table,
-                PROC_MONTHLY: self.settings.monthly_table}[procedure]
+                PROC_MONTHLY: self.settings.monthly_table, PROC_EOD_DAILY: self.settings.daily_table}[procedure]
 
     # -- running a procedure -------------------------------------------------
     def _execute(self, conn: sqlite3.Connection, steps: Sequence[_Statement], params: Mapping[str, Any],
@@ -1077,7 +1415,8 @@ class PromotionService:
 
     def _run(self, procedure: str, mode: str, parameters: dict,
              build: Callable[[str, str | None], Sequence[_Statement]],
-             hooks: Mapping[str, Callable[[sqlite3.Connection], None]] | None = None) -> PromotionResult:
+             hooks: Mapping[str, Callable[[sqlite3.Connection], None]] | None = None,
+             prepare: Callable[[sqlite3.Connection], None] | None = None) -> PromotionResult:
         result = PromotionResult(procedure, self._target_of(procedure), mode=mode,
                                  parameters={k: v for k, v in parameters.items() if v not in (None, "", False)})
         self.audit.log(COMPONENT, f"{procedure}_started", f"{mode} promotion into {result.target_table}",
@@ -1094,6 +1433,8 @@ class PromotionService:
                 self.data_errors.ensure_table(conn)
                 self.corrections.ensure_table(conn)
                 self.symbols.ensure_table(conn)
+                if prepare is not None:
+                    prepare(conn)
                 since = None
                 if mode == MODE_INCREMENTAL:
                     last = self.last_completed(procedure, conn=conn)
@@ -1170,6 +1511,58 @@ class PromotionService:
         # the calendar hook fills the closed-days table right after it is created
         return self._run(PROC_DAILY, mode, parameters, build, hooks={"closed_days": fill_closed_days})
 
+    def promote_eod_daily(self, symbol: str | None = None, ticker: str | None = None, market: str | None = None,
+                          load_id: str | None = None, date_from: str | date | None = None,
+                          date_to: str | date | None = None, full: bool | None = None,
+                          symbols: Sequence[str] | None = None) -> PromotionResult:
+        """``promote_eod_daily``: move the EOD API data (``Stock_EOD_Stage``) into the daily table,
+        converting to adjusted prices (rate = AdjustedClose / Close; Open / High / Low * rate;
+        Close = AdjustedClose; Volume as is) and matching symbol, trade date and market.
+
+        Without filters the run is *incremental* (EOD rows changed since the last completed
+        unfiltered run, plus rows without a daily row yet; the first run is full).  *market*
+        sets the market of every selected row (otherwise: Stock_Symbol, the daily table,
+        ``[eod_api] default_market``).  Raises :class:`PromotionError` on failure."""
+        from .eod_stage import EodStageLoader
+        filters = {"symbol": (symbol or "").strip().upper() or None, "ticker": (ticker or "").strip().upper() or None,
+                   "load_id": (load_id or "").strip() or None, "date_from": normalise_date(date_from),
+                   "date_to": normalise_date(date_to), "market": (market or "").strip().upper() or None,
+                   "symbols": sorted({s.strip().upper() for s in symbols if s and s.strip()}) if symbols else None}
+        if filters["date_from"] and filters["date_to"] and filters["date_from"] > filters["date_to"]:
+            raise PromotionError("date_from must not be after date_to")
+        mode = MODE_FULL if (full or any(filters.values())) else MODE_INCREMENTAL
+        # the history keeps a short form of a long symbol list
+        shown = filters["symbols"]
+        parameters = {**filters, "full": bool(full),
+                      "symbols": (shown if not shown or len(shown) <= 20 else
+                                  f"{len(shown)} symbols: {', '.join(shown[:20])}, ...")}
+
+        def fill_closed_days(conn: sqlite3.Connection) -> None:
+            """step 3: the No_Trading_Day calendar for every market / trade date of the EOD rows."""
+            if not self.settings.reject_market_closed_days:
+                return
+            pairs = conn.execute(f'SELECT DISTINCT "Market", "TradeDate" FROM {_T_EOD} WHERE "Market" IS NOT NULL').fetchall()
+            closed = []
+            for market_, text in pairs:
+                try:
+                    reason = self.calendar.closure_reason(market_, date.fromisoformat(text), conn)
+                except ValueError:
+                    continue
+                if reason:
+                    closed.append((market_, text, reason))
+            conn.executemany(f'INSERT OR IGNORE INTO {_T_CLOSED} ("Market", "TradeDate", "Reason") VALUES (?, ?, ?)',
+                             closed)
+
+        def build(mode_: str, since: str | None) -> Sequence[_Statement]:
+            return eod_daily_procedure(self.settings, filters, since=since if mode_ == MODE_INCREMENTAL else None)
+
+        def prepare(conn: sqlite3.Connection) -> None:
+            EodStageLoader(self.settings, self.db).ensure_table(conn)
+            conn.create_function(EOD_ROUND_FUNCTION, 2, eod_round, deterministic=True)
+
+        return self._run(PROC_EOD_DAILY, mode, parameters, build, hooks={"eod_closed_days": fill_closed_days},
+                         prepare=prepare)
+
     def promote_weekly(self, full: bool | None = None, ticker: str | None = None) -> PromotionResult:
         """``promote_weekly``: aggregate the daily table into one row per stock and ISO week."""
         return self._promote_period(PROC_WEEKLY, weekly_procedure, full, ticker)
@@ -1239,11 +1632,13 @@ class PromotionService:
         table, period = _q(self.tables[kind]), _q(self._period_column(kind))
         row = conn.execute(f'SELECT COUNT(*), COUNT(DISTINCT "Ticker"), MIN({period}), MAX({period}) '
                            f'FROM {table}').fetchone()
-        procedure = {"daily": PROC_DAILY, "weekly": PROC_WEEKLY, "monthly": PROC_MONTHLY}[kind]
+        procedures = {"daily": (PROC_DAILY, PROC_EOD_DAILY), "weekly": (PROC_WEEKLY,),
+                      "monthly": (PROC_MONTHLY,)}[kind]
         cols = ", ".join(_q(c) for c in HISTORY_COLUMNS)
-        last = conn.execute(f'SELECT {cols} FROM "{PROMOTION_HISTORY_TABLE}" WHERE "Procedure" = ? '
-                            f'AND "TargetTable" = ? ORDER BY "PromotionId" DESC LIMIT 1',
-                            (procedure, self.tables[kind])).fetchone()
+        last = conn.execute(f'SELECT {cols} FROM "{PROMOTION_HISTORY_TABLE}" WHERE "Procedure" IN '
+                            f'({", ".join("?" * len(procedures))}) AND "TargetTable" = ? '
+                            f'ORDER BY "PromotionId" DESC LIMIT 1',
+                            (*procedures, self.tables[kind])).fetchone()
         return ActiveTableSummary(kind, self.tables[kind], int(row[0]), int(row[1]), row[2], row[3],
                                   PromotionRecord(*last) if last else None)
 

@@ -12,8 +12,10 @@ data/archive/*
 data/error/*
 data/skipped/*
 data/work/*
+data/api_downloads/*
 !data/**/.gitkeep
 
 # project virtual environment
 .venv/
 .coverage
+htmlcov/

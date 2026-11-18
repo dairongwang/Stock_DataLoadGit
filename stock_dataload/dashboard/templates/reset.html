@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Choose a new password{% endblock %}
+{% block content %}
+<div class="card login-card">
+  <h1>Choose a new password</h1>
+  <p class="muted">for <b>{{ user.username }}</b></p>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('reset_password', token=token) }}">
+    <div class="form-grid" style="grid-template-columns:160px 1fr">
+      <label for="new_password">New password</label><input type="password" id="new_password" name="new_password" required minlength="8" autocomplete="new-password" autofocus>
+      <label for="confirm_password">Repeat password</label><input type="password" id="confirm_password" name="confirm_password" required minlength="8" autocomplete="new-password">
+      <div class="help">at least 8 characters</div>
+    </div>
+    <div class="actions"><button type="submit">Change password</button></div>
+  </form>
+</div>
+{% endblock %}

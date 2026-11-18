@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ label }} - test payment page{% endblock %}
+{% block content %}
+<div class="card" style="max-width:520px;margin:30px auto;border-color:#fde68a">
+  <div class="notice" style="margin-bottom:14px"><b>Built-in stub of {{ label }}.</b> It stands in for the
+  provider's hosted payment page so the purchase can be tried out without an account at
+  {{ 'Stripe' if s.kind == 'stripe' else 'PayPal' }}. <b>Nothing is charged</b> - <i>Pay</i> approves the test payment,
+  <i>Cancel</i> returns to the shop.</div>
+  <h1 style="font-size:22px">{% if s.kind == 'paypal' %}Pay with PayPal{% else %}Pay by card{% endif %}</h1>
+
+  <table>
+    <tr><th>Order</th><td class="mono">{{ s.order_ref }}</td></tr>
+    {% if s.description %}<tr><th>Item</th><td>{{ s.description }}</td></tr>{% endif %}
+    <tr><th>Amount</th><td><b>{{ '{:,.2f}'.format(s.amount / 100) }} {{ s.currency }}</b></td></tr>
+    {% if s.email %}<tr><th>Receipt to</th><td>{{ s.email }}</td></tr>{% endif %}
+    <tr><th>Session</th><td class="mono muted">{{ s.id }}</td></tr>
+    <tr><th>Status</th><td>{% if s.status == 'open' %}<span class="badge">open</span>{% elif s.status == 'paid' %}<span class="badge ok">paid</span>{% else %}<span class="badge">{{ s.status }}</span>{% endif %}</td></tr>
+  </table>
+
+  {% if s.status == 'open' %}
+  <form method="post" action="{{ url_for('fake_checkout', kind=s.kind, sid=s.id) }}" style="margin-top:14px">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    {% if s.kind == 'paypal' %}
+    <div class="form-grid" style="grid-template-columns:150px 1fr">
+      <label for="payer_email">PayPal account</label>
+      <input type="email" id="payer_email" name="payer_email" value="{{ s.email or '' }}" placeholder="dummy.payer@example.com" autocomplete="off">
+      <span class="help">any address - it only appears on the receipt (no PayPal account is used)</span>
+    </div>
+    {% else %}
+    <p class="muted" style="font-size:13px">On Stripe's real page the card details are entered here. This stub asks for
+    none - the portal never sees or stores card data.</p>
+    {% endif %}
+    <div class="actions">
+      <button type="submit" name="action" value="pay" class="big">Pay {{ '{:,.2f}'.format(s.amount / 100) }} {{ s.currency }}</button>
+      <button type="submit" name="action" value="cancel" class="secondary" formnovalidate>Cancel</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted" style="margin-top:14px">This test payment is already {{ s.status }}.
+  <a href="{{ s.success_url if s.status == 'paid' else s.cancel_url }}">Back to the shop</a></p>
+  {% endif %}
+</div>
+{% endblock %}

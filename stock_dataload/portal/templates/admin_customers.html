@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Admin - customers{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<h1>Customers &amp; keys</h1>
+{% include "_admin_nav.html" %}
+<div class="card">
+  <form method="get" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <input type="text" name="q" value="{{ args.get('q', '') }}" placeholder="e-mail or name" style="width:260px">
+    <button class="small secondary" type="submit">Search</button>
+    {% if args.get('q') %}<a class="btn small secondary" href="{{ url_for('admin_customers') }}">clear</a>{% endif %}
+    <span class="muted" style="margin-left:auto;font-size:12px">packs: {% for p in packs %}{{ p.name }} {{ p.tokens }} = {{ p.price }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
+  </form>
+  {% if rows %}
+  <div style="overflow:auto">
+  <table style="font-size:12px">
+    <tr><th>Customer</th><th>Role</th><th>E-mail</th><th>2FA</th><th>Key</th><th class="num">Balance / bought / used</th><th>Last used</th><th>Actions</th></tr>
+    {% for c, keys, methods in rows %}
+    {% set rowspan = keys|length if keys else 1 %}
+    {% set me = current_customer.customer_id == c.customer_id %}
+    {% for k in keys %}
+    <tr class="{{ '' if c.active else 'resolved' }}">
+      {% if loop.first %}
+      <td rowspan="{{ rowspan }}"><b>{{ c.email }}</b>{% if c.display_name %} <span class="muted">{{ c.display_name }}</span>{% endif %}{% if me %} <span class="badge">you</span>{% endif %}
+        <div class="muted">since {{ c.created_at[:10] }}{% if not c.active %} · <span class="badge err">disabled</span>{% endif %}</div>
+        {% if not me %}<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">
+          <form method="post" action="{{ url_for('admin_customer_toggle', customer_id=c.customer_id) }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small {{ 'danger' if c.active else 'secondary' }}" type="submit">{{ 'Disable' if c.active else 'Enable' }}</button></form>
+          {% if methods %}<form method="post" action="{{ url_for('admin_customer_reset_2fa', customer_id=c.customer_id) }}" class="inline" onsubmit="return confirm('Remove all second factors of {{ c.email }}?')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small secondary" type="submit">Reset 2FA</button></form>{% endif %}
+        </div>{% endif %}</td>
+      <td rowspan="{{ rowspan }}">{% if c.is_guest %}<span class="badge">guest</span>{% elif me %}<span class="badge blue">admin</span>{% else %}
+        <form method="post" action="{{ url_for('admin_customer_role', customer_id=c.customer_id) }}" class="inline" style="display:flex;gap:3px"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}">
+          <select name="role" style="padding:3px 5px;font-size:12px;width:auto">{% for r in roles %}<option value="{{ r }}" {% if c.role == r %}selected{% endif %}>{{ r }}</option>{% endfor %}</select><button class="small secondary" type="submit">✓</button></form>{% endif %}</td>
+      <td rowspan="{{ rowspan }}">{% if c.is_email_verified %}<span class="badge ok">verified</span>{% elif c.is_guest %}<span class="muted">-</span>{% else %}<span class="badge warn">unverified</span>
+        <form method="post" action="{{ url_for('admin_customer_verify_email', customer_id=c.customer_id) }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small secondary" type="submit" title="mark as verified">✓</button></form>{% endif %}</td>
+      <td rowspan="{{ rowspan }}">{% for m in methods %}<span class="badge ok" title="{{ method_labels[m] }}">{{ m }}</span> {% else %}<span class="muted">none</span>{% endfor %}</td>
+      {% endif %}
+      <td class="mono">{{ k.display }}{% if not k.active %} <span class="badge err">off</span>{% endif %}{% if k.label %}<div class="muted" style="font-size:11px">{{ k.label }}</div>{% endif %}</td>
+      <td class="num"><b>{{ '{:,}'.format(k.balance) }}</b> <span class="muted">/ {{ '{:,}'.format(k.tokens_purchased) }} / {{ '{:,}'.format(k.tokens_used) }}</span></td>
+      <td class="muted">{{ (k.last_used_at or '-')[:16] }}</td>
+      <td style="white-space:nowrap">{% if k.active %}<form method="post" action="{{ url_for('admin_key_grant', api_key_id=k.api_key_id) }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}">
+        <input type="number" name="tokens" min="1" value="100" style="width:58px;padding:3px 4px"> <input type="text" name="note" placeholder="note" style="width:70px;padding:3px 4px"> <button class="small secondary" type="submit">Grant</button></form>{% endif %}
+        <form method="post" action="{{ url_for('admin_key_toggle', api_key_id=k.api_key_id) }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small {{ 'danger' if k.active else 'secondary' }}" type="submit">{{ 'Disable' if k.active else 'Enable' }}</button></form></td>
+    </tr>
+    {% else %}
+    <tr class="{{ '' if c.active else 'resolved' }}">
+      <td><b>{{ c.email }}</b>{% if c.display_name %} <span class="muted">{{ c.display_name }}</span>{% endif %}{% if me %} <span class="badge">you</span>{% endif %}<div class="muted">since {{ c.created_at[:10] }}{% if not c.active %} · <span class="badge err">disabled</span>{% endif %}</div>
+        {% if not me %}<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">
+          <form method="post" action="{{ url_for('admin_customer_toggle', customer_id=c.customer_id) }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small {{ 'danger' if c.active else 'secondary' }}" type="submit">{{ 'Disable' if c.active else 'Enable' }}</button></form>
+          {% if methods %}<form method="post" action="{{ url_for('admin_customer_reset_2fa', customer_id=c.customer_id) }}" class="inline" onsubmit="return confirm('Remove all second factors of {{ c.email }}?')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small secondary" type="submit">Reset 2FA</button></form>{% endif %}
+        </div>{% endif %}</td>
+      <td>{% if c.is_guest %}<span class="badge">guest</span>{% elif me %}<span class="badge blue">admin</span>{% else %}
+        <form method="post" action="{{ url_for('admin_customer_role', customer_id=c.customer_id) }}" class="inline" style="display:flex;gap:3px"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}">
+          <select name="role" style="padding:3px 5px;font-size:12px;width:auto">{% for r in roles %}<option value="{{ r }}" {% if c.role == r %}selected{% endif %}>{{ r }}</option>{% endfor %}</select><button class="small secondary" type="submit">✓</button></form>{% endif %}</td>
+      <td>{% if c.is_email_verified %}<span class="badge ok">verified</span>{% elif c.is_guest %}<span class="muted">-</span>{% else %}<span class="badge warn">unverified</span>
+        <form method="post" action="{{ url_for('admin_customer_verify_email', customer_id=c.customer_id) }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="q" value="{{ args.get('q', '') }}"><button class="small secondary" type="submit" title="mark as verified">✓</button></form>{% endif %}</td>
+      <td>{% for m in methods %}<span class="badge ok">{{ m }}</span> {% else %}<span class="muted">none</span>{% endfor %}</td>
+      <td colspan="4" class="muted">no key yet</td>
+    </tr>
+    {% endfor %}
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">No customers match.</p>{% endif %}
+</div>
+<p class="muted" style="font-size:13px">Roles: <b>user</b> = the account pages; <b>admin</b> = these pages too{% if settings.admin_requires_2fa %} (with a second factor){% endif %}. <b>Reset 2FA</b> removes all second factors and recovery codes of a locked-out customer. <b>Grant</b> credits tokens by hand (refunds, trials, invoiced deals). Staff also see this data on the internal dashboard.</p>
+{% endblock %}

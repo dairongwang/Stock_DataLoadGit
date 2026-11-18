@@ -1,0 +1,68 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>{a76e15c6-79a7-464e-aa15-e19827194595}</ProjectGuid>
+    <ProjectHome />
+    <StartupFile>stock_chart\__main__.py</StartupFile>
+    <SearchPath />
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <ProjectTypeGuids>{888888a0-9f3d-457c-b088-3a5042f75d52}</ProjectTypeGuids>
+    <LaunchProvider>Standard Python launcher</LaunchProvider>
+    <InterpreterId>Global|PythonCore|3.14</InterpreterId>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'" />
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'" />
+  <PropertyGroup>
+    <VisualStudioVersion Condition=" '$(VisualStudioVersion)' == '' ">10.0</VisualStudioVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include=".gitignore" />
+    <Content Include="README.md" />
+    <Content Include="chart.ini" />
+    <Content Include="sql\create_chart_lists_sqlite.sql" />
+    <Content Include="docs\chart_monthly.png" />
+    <Content Include="docs\chart_weekly.png" />
+    <Content Include="requirements-dev.txt" />
+    <Content Include="requirements.txt" />
+    <Content Include="stock_chart\static\app.js" />
+    <Content Include="stock_chart\static\candlestick.js" />
+    <Content Include="stock_chart\static\chart.css" />
+    <Content Include="stock_chart\static\watchlist.js" />
+    <Content Include="stock_chart\templates\error.html" />
+    <Content Include="stock_chart\templates\index.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="stock_chart\__init__.py" />
+    <Compile Include="stock_chart\__main__.py" />
+    <Compile Include="stock_chart\app.py" />
+    <Compile Include="stock_chart\config.py" />
+    <Compile Include="stock_chart\lists.py" />
+    <Compile Include="stock_chart\repository.py" />
+    <Compile Include="tests\__init__.py" />
+    <Compile Include="tests\helpers.py" />
+    <Compile Include="tests\test_app.py" />
+    <Compile Include="tests\test_browser.py" />
+    <Compile Include="tests\test_chart_js.py" />
+    <Compile Include="tests\test_config.py" />
+    <Compile Include="tests\test_repository.py" />
+    <Compile Include="tests\test_lists.py" />
+    <Compile Include="tests\test_periods.py" />
+    <Compile Include="tests\test_watchlist.py" />
+    <Compile Include="wsgi.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="docs" />
+    <Folder Include="sql" />
+    <Folder Include="stock_chart" />
+    <Folder Include="stock_chart\static" />
+    <Folder Include="stock_chart\templates" />
+    <Folder Include="tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <InterpreterReference Include="Global|PythonCore|3.14" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+</Project>
